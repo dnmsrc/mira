@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0b1018" />
+<title>Mira · 雨后的咖啡馆</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div id="app">
+  <!-- 场景层：背景板（固定、无人物）+ 角色贴片（带 alpha，独立切换）
+       + 背景氛围视频 + 氛围叠加。人物和场景是两张独立素材，换表情不会带动场景重绘。 -->
+  <div id="stage" class="stage">
+    <img id="plateA" class="layer" alt="" draggable="false" />
+    <img id="plateB" class="layer" alt="" draggable="false" />
+    <video id="bgLoop" class="bg-loop" muted playsinline loop preload="auto"
+           src="/static/assets/video/idle_loop.mp4"></video>
+    <div class="char-layer">
+      <img id="charA" class="sprite" alt="" draggable="false" />
+      <img id="charB" class="sprite" alt="" draggable="false" />
+    </div>
+    <div id="dim" class="dim"></div>
+    <div id="rain" class="rain"><i></i><i></i><i></i></div>
+    <div id="flash" class="flash"></div>
+    <div id="grain" class="grain"></div>
+  </div>
+
+  <!-- 视频演出层：由对话触发的 MP4 片段 -->
+  <div id="cinema" class="cinema" aria-hidden="true">
+    <video id="eventVideo" muted playsinline preload="none"></video>
+    <div id="cinemaBadge" class="cinema-badge"></div>
+  </div>
+
+  <!-- 顶部 HUD -->
+  <header class="hud">
+    <div class="who">
+      <span class="name">Mira</span>
+      <span class="dot"></span>
+      <span id="stateLabel" class="state-label">待机</span>
+    </div>
+    <div class="hud-right">
+      <button id="debugBtn" class="chip-btn" title="观测面板">观测</button>
+    </div>
+  </header>
+
+  <!-- 动作/情绪提示（角色指令的可视化证据） -->
+  <div id="actionChip" class="action-chip"></div>
+
+  <!-- 开始遮罩 -->
+  <div id="gate" class="gate">
+    <div class="gate-card">
+      <div class="gate-kicker">23:47 · 暴雨刚停</div>
+      <h1>Mira 在等你</h1>
+      <p>一家即将打烊的咖啡馆。她穿着琥珀色雨衣，坐在窗边，似乎在等一个不会来的人。</p>
+      <div class="gate-meta">实时语音 · 角色表演 · 场景演出</div>
+      <button id="startBtn" class="primary">进入场景</button>
+      <div class="gate-note">提示：说话时按住麦克风可以打断她</div>
+    </div>
+  </div>
+
+  <!-- 字幕 + 输入区 -->
+  <div class="bottom">
+    <div id="subtitle" class="subtitle" aria-live="polite">
+      <span id="caption"></span><span class="caret"></span>
+    </div>
+    <div id="suggest" class="suggest"></div>
+    <div class="dock">
+      <input id="textInput" type="text" inputmode="text" autocomplete="off"
+             placeholder="说点什么…" maxlength="120" />
+      <button id="sendBtn" class="send" aria-label="发送">发送</button>
+      <button id="micBtn" class="mic" aria-label="按住说话">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z" fill="currentColor"/>
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <span class="mic-ring"></span>
+      </button>
+    </div>
+    <div class="dock-hint">
+      <span id="hint">打字，或按住麦克风说话 · 说话时再次按下即可打断</span>
+      <span id="latency" class="latency"></span>
+    </div>
+  </div>
+
+  <!-- 观测面板 -->
+  <aside id="debugPanel" class="debug-panel" hidden>
+    <div class="dp-head">
+      <strong>观测面板</strong>
+      <button id="debugClose" class="chip-btn">关闭</button>
+    </div>
+    <div class="dp-row">
+      <label>Provider</label>
+      <select id="modeSelect">
+        <option value="llama">本地 Qwen3（llama.cpp）</option>
+        <option value="mock">Mock（零依赖剧本）</option>
+      </select>
+    </div>
+    <div class="dp-row dp-inject">
+      <label>故障注入</label>
+      <button data-inject="llm_timeout" class="chip-btn">LLM 超时</button>
+      <button data-inject="tts_fail" class="chip-btn">TTS 失败</button>
+      <button data-inject="slow_tts" class="chip-btn">TTS 变慢</button>
+      <button data-inject="video_fail" class="chip-btn">视频失败</button>
+    </div>
+    <div class="dp-row">
+      <label>语音</label>
+      <button id="sampleVoice" class="chip-btn">注入示例语音</button>
+      <button id="sampleVoice2" class="chip-btn">示例语音 · 雷</button>
+      <span class="dp-note">走同一条 STT 通路</span>
+    </div>
+    <div class="dp-metrics" id="metrics"></div>
+    <div class="dp-events" id="events"></div>
+  </aside>
+
+  <div id="toast" class="toast" hidden></div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

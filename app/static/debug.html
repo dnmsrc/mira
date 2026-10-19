@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mira · 观测</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 18px; background: #070b12; color: #e8eef7;
+         font: 13px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: rgba(255,255,255,.45); font-size: 12px; margin-bottom: 16px; }
+  .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
+          border-radius: 10px; padding: 10px 14px; min-width: 110px; }
+  .card b { display: block; font-size: 18px; color: #ffb454; font-weight: 600; }
+  .card span { font-size: 11px; color: rgba(255,255,255,.5); }
+  table { width: 100%; border-collapse: collapse; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.06); vertical-align: top; }
+  th { color: rgba(255,255,255,.45); font-weight: 500; position: sticky; top: 0; background: #070b12; }
+  .err { color: #ff9d9d; }
+  .ok { color: #8fe3a8; }
+  input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+          color: #fff; border-radius: 8px; padding: 6px 10px; font-size: 12px; width: 200px; }
+</style>
+</head>
+<body>
+<h1>Mira 观测面板</h1>
+<div class="sub">读取 <code>/api/events/&lt;session&gt;</code>：一次互动里的状态事件、耗时与错误。会话 ID：<input id="sid" placeholder="粘贴 session_id" /></div>
+<div class="cards" id="cards"></div>
+<table>
+  <thead><tr><th>时间</th><th>事件</th><th>详情</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="3">等待数据…</td></tr></tbody>
+</table>
+<script>
+const $ = (id) => document.getElementById(id);
+const sidFromUrl = new URLSearchParams(location.search).get("sid");
+if (sidFromUrl) $("sid").value = sidFromUrl;
+$("sid").onchange = () => $("sid").value && refresh();
+
+async function refresh() {
+  const sid = $("sid").value.trim();
+  if (!sid) return;
+  const health = await fetch("/api/health").then((r) => r.json()).catch(() => ({}));
+  const data = await fetch("/api/events/" + sid).then((r) => r.json()).catch(() => ({ events: [] }));
+  const ev = data.events || [];
+  const turns = ev.filter((e) => e.kind === "turn_done");
+  const errors = ev.filter((e) => e.kind.includes("error"));
+  const avg = turns.length ? Math.round(turns.reduce((a, b) => a + (b.ms || 0), 0) / turns.length) : "-";
+  $("cards").innerHTML = [
+    ["会话 turn", data.seq ?? "-"],
+    ["完成 turn", turns.length],
+    ["平均 turn 耗时", avg === "-" ? "-" : avg + "ms"],
+    ["错误", errors.length],
+    ["TTS 缓存", health.tts_cache ?? "-"],
+    ["provider", health.llm ?? "-"],
+  ].map(([k, v]) => `<div class="card"><b>${v}</b><span>${k}</span></div>`).join("");
+  $("rows").innerHTML = ev.slice().reverse().map((e) => {
+    const { ts, kind, ...rest } = e;
+    const t = new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+    const cls = kind.includes("error") ? "err" : kind === "turn_done" ? "ok" : "";
+    return `<tr><td>${t}</td><td class="${cls}">${kind}</td><td>${escapeHtml(JSON.stringify(rest))}</td></tr>`;
+  }).join("") || `<tr><td colspan="3">没有事件（先在主页面跑一轮对话）</td></tr>`;
+}
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));}
+setInterval(() => $("sid").value && refresh(), 2000);
+</script>
+</body>
+</html>
