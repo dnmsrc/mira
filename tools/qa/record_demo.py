@@ -79,7 +79,72 @@ def say(page, text, hold_ms=900):
     page.click("#sendBtn")
     page.wait_for_timeout(450)
     wait_idle(page, timeout=70)
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(1500)
+
+
+def send(page, text, hold_ms=900):
+    """只发送、不等这一轮结束（用于紧接着盯着演出层看，或者准备好做打断）。"""
+    log("send:", text)
+    page.fill("#textInput", text)
+    page.wait_for_timeout(hold_ms)
+    page.click("#sendBtn")
+    page.wait_for_timeout(400)
+
+
+def watch_flash(page, timeout=10000):
+    """等「打雷」这一拍真的闪起来再截。
+
+    2026-10-21：闪电不再走演出层（#cinema），而是 #flash 补光 + WebAudio 滚雷。
+    旧脚本在这里等 #cinema 12 秒，等于在成片里插了 13 秒死画面（第一版录屏就带着它）。
+    """
+    try:
+        page.wait_for_function(
+            "() => { const c = document.getElementById('actionChip');"
+            "        return !!c && c.classList.contains('show') && c.textContent.indexOf('闪电') >= 0; }",
+            timeout=timeout)
+        # 补光是 0.6s 的 CSS 动画，连拍两张抓中段，两张都不中就用第一张
+        page.wait_for_timeout(90)
+        page.screenshot(path=str(OUT / "cinema_thunder.png"))
+        page.wait_for_timeout(120)
+        page.screenshot(path=str(OUT / "cinema_thunder_b.png"))
+        state = page.evaluate("""() => {
+            const f = document.getElementById('flash');
+            const c = document.getElementById('actionChip');
+            return {flashOn: !!(f && f.classList.contains('on')),
+                    chip: c ? c.textContent : '',
+                    opacity: f ? getComputedStyle(f).opacity : ''}; }""")
+        log("flash:", json.dumps(state, ensure_ascii=False))
+        page.wait_for_timeout(1400)
+        return state
+    except Exception as exc:
+        log("flash never fired:", type(exc).__name__)
+        page.screenshot(path=str(OUT / "cinema_thunder_missing.png"))
+        return None
+
+
+def watch_cinema(page, name, timeout=12000):
+    """等演出层真的出现，截图存证（2026-10-20 起是静帧 + 程序合成，不再有 MP4）。"""
+    try:
+        page.wait_for_function(
+            "() => document.getElementById('cinema').classList.contains('show')",
+            timeout=timeout)
+        page.wait_for_timeout(700)
+        shot = OUT / f"cinema_{name}.png"
+        page.screenshot(path=str(shot))
+        state = page.evaluate("""() => { const c = document.getElementById('cinema');
+            const s = document.getElementById('eventStill');
+            return {shown: c.classList.contains('show'),
+                    ready: c.classList.contains('still-ready'),
+                    fallback: c.classList.contains('fallback'),
+                    badge: document.getElementById('cinemaBadge').textContent,
+                    src: s && s.currentSrc ? s.currentSrc.split('/').pop() : ''}; }""")
+        log("cinema:", json.dumps(state, ensure_ascii=False))
+        page.wait_for_timeout(2600)
+        return state
+    except Exception as exc:
+        log("cinema layer never showed:", type(exc).__name__)
+        page.screenshot(path=str(OUT / f"cinema_{name}_missing.png"))
+        return None
 
 
 def press_mic(page, hold=4.6):
@@ -135,28 +200,45 @@ def main() -> int:
         page.click("#startBtn")
         page.wait_for_timeout(600)
         wait_idle(page, timeout=60)
-        chapter(page, "进入场景：待机状态（雨、灯光、窗外车流在动）", "idle")
-        page.wait_for_timeout(2800)
+        chapter(page, "进入场景：待机状态（雨后、两盏暖灯、湿街反光）", "idle")
+        page.wait_for_timeout(4200)
 
         # ---------- a) 文字互动 ----------
-        chapter(page, "文字互动 1/3：她说话（语音 + 字幕 + 表情/动作）", "text1_thinking")
+        chapter(page, "a) 文字互动：她先开口（语音 + 字幕 + 表情/动作同步）", "text1")
         say(page, "打扰了，外面雨刚停。你一个人在这儿？")
-        chapter(page, "文字互动 2/3", "text2")
-        say(page, "这么晚还开着，是这家店通宵吗？")
+        say(page, "我叫小周，今天加班到现在。你是在等人吗？")
 
-        # ---------- a) 语音互动（真实麦克风链路：getUserMedia -> MediaRecorder -> /api/stt） ----------
-        chapter(page, "语音互动：Chromium 用 WAV 伪装麦克风，走同一条 STT 通路", "voice_listening")
-        voice_turn(page, hold=4.8)
-        chapter(page, "语音输入的转写结果出现在观测指标里", "voice_after")
+        # ---------- b) 角色状态与表演：情绪/动作由指令驱动 ----------
+        chapter(page, "b) 角色状态：倾听 → 思考 → 说话，表情和动作随指令切换", "states")
+        say(page, "等多久了？给他打过电话吗？")
+        say(page, "外面雨好像小了点，你等的人还没来吗？")
 
-        say(page, "我猜你在等人。他迟到了？")
-        say(page, "所以你一直在等，没给他打电话？")
-        chapter(page, "角色状态：思考→说话，表情/动作随指令切换", "thinking")
-        say(page, "你是摄影师吧？我好像看到你包里有相机。")
-        # 第 3 拍之后「照片」关键词会触发 photo_reveal 的视频演出
-        chapter(page, "d) 多模态：台词触发视频演出（照片特写）", "photo_event")
-        say(page, "那张照片是谁？能让我看看吗？", hold_ms=1100)
+        # ---------- d) 台词触发的视觉事件：照片（内容触发，不是计时器） ----------
+        # 顺序很重要：先问照片。问「相机」也会触发同一个事件，如果先问相机，
+        # 事件会被去重规则吃掉，后面再问照片就不会演了（第一次录屏就踩了这个坑）。
+        chapter(page, "d) 台词触发事件 1：提到照片 → 镜头切近景 + 照片演出", "photo_event")
+        send(page, "能让我看看那张照片吗？")
+        cinema_photo = watch_cinema(page, "photo")
+        wait_idle(page, timeout=70)
         page.wait_for_timeout(2200)
+
+        say(page, "你这相机不错啊，平时拍什么？")
+        say(page, "这张照片你一直带在身上吗？")
+
+        # ---------- d) 台词触发的视觉事件：雷闪 ----------
+        chapter(page, "d) 台词触发事件 2：提到打雷 → 闪电补光 + 滚雷（不占用演出层）",
+                "thunder_event")
+        send(page, "外面好像又打雷了。")
+        cinema_thunder = watch_flash(page)
+        wait_idle(page, timeout=70)
+        page.wait_for_timeout(1200)
+
+        # ---------- a) 语音互动（真实麦克风链路：getUserMedia → MediaRecorder → /api/stt） ----------
+        chapter(page, "a) 语音互动：WAV 伪装麦克风，走同一条 STT 通路", "voice_listening")
+        voice_turn(page, hold=4.8)
+        chapter(page, "语音转写结果出现在观测指标里，并直接成为下一轮输入", "voice_after")
+
+        say(page, "后来呢？他就没再出现过？")
 
         # ---------- c) 语音打断 ----------
         chapter(page, "c) 打断：她正在说话时按麦克风", "bargein")
@@ -204,19 +286,73 @@ def main() -> int:
         page.click("#debugClose")
         page.wait_for_timeout(300)
 
-        # ---------- 收尾：再一次语音互动 + 末班车 ----------
-        chapter(page, "收尾：语音提问，情绪收束", "closing")
+        # ---------- 收尾：末班车 + 关灯（环境变化由卡包 pin 保证一定出现） ----------
+        chapter(page, "收尾：末班车 → 灯光转暗（环境变化）→ 情绪收束", "closing")
         page.fill("#textInput", "末班车还有多久？我陪你等到最后一班。")
         page.wait_for_timeout(900)
         page.click("#sendBtn")
         page.wait_for_timeout(600)
         try:
-            page.wait_for_function("() => window.__mira.S.state === 'speaking'", timeout=25000)
-            page.wait_for_timeout(2600)
+            page.wait_for_function("() => window.__mira.S.state === 'idle'", timeout=60000)
         except Exception:
             pass
+        # 再推一拍：收尾拍的场景变化是卡包 pin 的，聊到这一拍就会关灯
+        page.fill("#textInput", "快打烊了吧？灯都要关了。")
+        page.wait_for_timeout(800)
+        page.click("#sendBtn")
+        page.wait_for_timeout(600)
+        try:
+            page.wait_for_function("() => window.__mira.S.scene === 'lights_dim'", timeout=45000)
+            page.wait_for_timeout(1200)
+            page.screenshot(path=str(OUT / "closing_lights_dim.png"))
+            log("lights_dim reached -> screenshot saved")
+        except Exception:
+            log("lights_dim never reached")
         wait_idle(page, timeout=70)
-        page.wait_for_timeout(2200)
+        page.wait_for_timeout(4200)
+
+        # ---------- 无密钥路径（题目要求「无需私人 API 密钥也能查看核心流程」） ----------
+        # 2026-10-20 改：观测面板现在**只暴露两档**——本地 Qwen3 与云端 DeepSeek（产品要求）。
+        # 原来这一章是 `select_option("#modeSelect", "mock")`，mock 选项删掉后这里会直接抛错。
+        # 改成拍「本地档本来就不需要任何 Key」：面板里 key 那一行默认就不出现，
+        # 这比切到 Mock 更能说明「无密钥可跑」——Mock 只是零依赖兜底，不是产品路径。
+        chapter(page, "无密钥路径：本地档不填任何 Key（DeepSeek 的 key 行默认不出现）",
+                "no_key_mode")
+        page.click("#debugBtn")
+        page.wait_for_timeout(600)
+        page.screenshot(path=str(OUT / "no_key_panel.png"))
+        page.evaluate("""() => {
+            const row = document.querySelector('.dp-row.dp-cloud');
+            const sel = document.getElementById('modeSelect');
+            return {
+                options: Array.from(sel.options).map(o => o.value),
+                cloudRowHidden: !!(row && row.hidden),
+                srvMode: (document.getElementById('srvMode') || {}).textContent || '',
+            };
+        }""")
+        page.wait_for_timeout(600)
+        page.click("#debugClose")
+        page.wait_for_timeout(300)
+        say(page, "你是在等人吗？")
+        say(page, "外面好像打雷了。")
+        page.wait_for_timeout(3200)
+
+        # ---------- 历史记录（可选扩展：会话回放 / 问题诊断）----------
+        # walk.py 里那张 20_history.png 是手工 setState 走出来的会话，一条真实轮次都没有，
+        # 面板当然是空的 —— 不能当证据。这里用**这一场真聊过的会话**打开面板。
+        page.click("#historyBtn")
+        page.wait_for_timeout(1600)
+        chapter(page, "历史记录：这一场真实对话逐轮回看，可导出 JSON", "history")
+        hist = page.evaluate("""() => ({
+            meta: (document.getElementById('historyMeta') || {}).textContent || '',
+            items: document.querySelectorAll('#historyList .hist-item').length,
+            first: ((document.querySelector('#historyList .hist-bubble') || {}).textContent || '').slice(0, 40),
+        })""")
+        log("history:", json.dumps(hist, ensure_ascii=False))
+        page.screenshot(path=str(OUT / "history_panel.png"))
+        page.wait_for_timeout(2400)
+        page.click("#historyClose")
+        page.wait_for_timeout(600)
 
         stats = page.evaluate("""() => ({
             state: window.__mira.S.state, beat: window.__mira.S.beat,
@@ -226,6 +362,8 @@ def main() -> int:
             latency: document.getElementById('latency').textContent,
         })""")
         log("stats:", json.dumps(stats, ensure_ascii=False))
+        log("cinema:", json.dumps({"photo": cinema_photo, "thunder": cinema_thunder},
+                                  ensure_ascii=False))
         chapter(page, "结束", "end")
         page.wait_for_timeout(1500)
 

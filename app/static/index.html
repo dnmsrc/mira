@@ -9,26 +9,37 @@
 </head>
 <body>
 <div id="app">
-  <!-- 场景层：背景板（固定、无人物）+ 角色贴片（带 alpha，独立切换）
-       + 背景氛围视频 + 氛围叠加。人物和场景是两张独立素材，换表情不会带动场景重绘。 -->
+  <!-- 场景层：背景板（固定、无人物）+ 角色贴片（带 alpha，独立切换）+ 氛围叠加。
+       人物和场景是两张独立素材，换表情不会带动场景重绘。
+       2026-10-20：这里不再有任何 <video>。原来一段待机循环 + 三段演出片段
+       （thunder / photo_reveal / last_train）是 AniSora 生成的，机位、光线、景深都和
+       底板不是同一场戏，一播就是"背景换台"；已全部删除，演出改由程序合成 + 静帧完成。 -->
   <div id="stage" class="stage">
     <img id="plateA" class="layer" alt="" draggable="false" />
     <img id="plateB" class="layer" alt="" draggable="false" />
-    <video id="bgLoop" class="bg-loop" muted playsinline loop preload="auto"
-           src="/static/assets/video/idle_loop.mp4"></video>
     <div class="char-layer">
       <img id="charA" class="sprite" alt="" draggable="false" />
       <img id="charB" class="sprite" alt="" draggable="false" />
+      <!-- 动作帧序列层：只在播放「多帧动作」时可见（见 app.js playSequence）。
+           单独一层是必须的：A/B 两层是 380ms 叠化（换表情用），而连续帧要的是
+           每帧 80–120ms 的硬切，挤在同一层会被过渡糊成鬼影。 -->
+      <div id="charC" class="sprite anim" aria-hidden="true">
+        <!-- 两张 img 交替抬 opacity：帧间 90ms 交叉淡入（manifest playback.crossfadeMs）。
+             单张硬切在 110ms/帧 时会「描线沸腾」——同一姿势重画，雨衣高光每帧都不一样。 -->
+        <img id="charC1" class="frame" alt="" draggable="false" />
+        <img id="charC2" class="frame" alt="" draggable="false" />
+      </div>
     </div>
     <div id="dim" class="dim"></div>
     <div id="rain" class="rain"><i></i><i></i><i></i></div>
+    <div id="sweep" class="sweep"></div>
     <div id="flash" class="flash"></div>
     <div id="grain" class="grain"></div>
   </div>
 
-  <!-- 视频演出层：由对话触发的 MP4 片段 -->
+  <!-- 演出层：静帧 + 徽标（原来这一层播 MP4） -->
   <div id="cinema" class="cinema" aria-hidden="true">
-    <video id="eventVideo" muted playsinline preload="none"></video>
+    <img id="eventStill" alt="" draggable="false" />
     <div id="cinemaBadge" class="cinema-badge"></div>
   </div>
 
@@ -40,6 +51,9 @@
       <span id="stateLabel" class="state-label">待机</span>
     </div>
     <div class="hud-right">
+      <!-- 记录：只读的对话历史（GET /api/history/{sid}），和观测面板不是一回事：
+           观测看的是内部事件流水，记录看的是「我们刚才说了什么」。 -->
+      <button id="historyBtn" class="chip-btn" title="历史记录">记录</button>
       <button id="debugBtn" class="chip-btn" title="观测面板">观测</button>
     </div>
   </header>
@@ -50,17 +64,22 @@
   <!-- 开始遮罩 -->
   <div id="gate" class="gate">
     <div class="gate-card">
-      <div class="gate-kicker">23:47 · 暴雨刚停</div>
+      <div id="gateKicker" class="gate-kicker">23:47 · 暴雨刚停</div>
       <h1>Mira 在等你</h1>
-      <p>一家即将打烊的咖啡馆。她穿着琥珀色雨衣，坐在窗边，似乎在等一个不会来的人。</p>
+      <p id="gateTagline">一家即将打烊的咖啡馆。她穿着琥珀色雨衣，坐在窗边，似乎在等一个不会来的人。</p>
       <div class="gate-meta">实时语音 · 角色表演 · 场景演出</div>
       <button id="startBtn" class="primary">进入场景</button>
-      <div class="gate-note">提示：说话时按住麦克风可以打断她</div>
+      <div class="gate-note">提示：按住麦克风说完松开就发送；她说话时按下麦克风可以打断她</div>
     </div>
   </div>
 
   <!-- 字幕 + 输入区 -->
   <div class="bottom">
+    <!-- 旁白条：她**没说话**时由系统叙述。
+         为什么单独一条：以前旁白复用 #subtitle，同一个位置、相近字号，观众会把它
+         当成她说的话（用户实测「旁白与字幕冲突」）。现在旁白在字幕上方、带竖线、
+         冷色斜体、无描边，并且永不与台词同时出现在同一行。 -->
+    <div id="narration" class="narration-bar"><span id="narrationText"></span></div>
     <div id="subtitle" class="subtitle" aria-live="polite">
       <span id="caption"></span><span class="caret"></span>
     </div>
@@ -78,8 +97,15 @@
       </button>
     </div>
     <div class="dock-hint">
-      <span id="hint">打字，或按住麦克风说话 · 说话时再次按下即可打断</span>
+      <span id="hint">按住麦克风说完松开，或轻点一下说话 · 说话时再次按下可打断她</span>
       <span id="latency" class="latency"></span>
+    </div>
+    <!-- 录音条：录了几秒 / 是否听到声音 / 取消。没有它，用户无法判断话筒有没有在工作。 -->
+    <div id="recBar" class="rec-bar" hidden>
+      <span class="rec-dot"></span>
+      <span id="recTime" class="rec-time">0.0s</span>
+      <span id="recTip" class="rec-tip">在等你说话…</span>
+      <button id="recCancel" class="rec-cancel" type="button">取消</button>
     </div>
   </div>
 
@@ -89,19 +115,36 @@
       <strong>观测面板</strong>
       <button id="debugClose" class="chip-btn">关闭</button>
     </div>
+    <!-- Provider 只暴露两个入口：本地 Qwen3（llama.cpp）与云端 DeepSeek。
+         服务端 LLM_MODE 默认仍是 auto（strata → llama → mock 自动回落），这是服务端
+         自己的降级策略，不该由前端暴露成五个按钮；当前实际落在哪一档写在下面一行。 -->
     <div class="dp-row">
       <label>Provider</label>
-      <select id="modeSelect">
+      <select id="modeSelect" title="前端只暴露本地 Qwen3 与 DeepSeek 两档">
         <option value="llama">本地 Qwen3（llama.cpp）</option>
-        <option value="mock">Mock（零依赖剧本）</option>
+        <option value="cloud">云端 DeepSeek</option>
       </select>
+    </div>
+    <!-- 服务端当前实际 provider：前端选的是「入口」，服务端可能在 auto 链里落到
+         strata / mock，不写出来用户会以为自己选的 llama 就是实际在跑的那个。 -->
+    <div id="srvMode" class="dp-note srv-mode">服务端实际 provider：查询中…</div>
+    <!-- DeepSeek 的 key 行只在选中 cloud 时出现（默认 hidden，app.js 的 syncCloudRow()
+         负责显隐）；key 只发给服务端进程内存，前端不落 localStorage / sessionStorage。 -->
+    <div class="dp-row dp-cloud" hidden>
+      <label>DeepSeek</label>
+      <input id="cloudKey" type="password" autocomplete="off" spellcheck="false"
+             placeholder="sk-…（只填 key，临时用）" />
+      <button id="cloudSave" class="chip-btn">连接</button>
+      <button id="cloudClear" class="chip-btn">清除</button>
+      <span id="cloudState" class="dp-note">未配置 · 仅存内存，重启即失效，不写磁盘</span>
+      <span class="dp-note dp-cloud-hint">选择 DeepSeek 后在此粘贴 key，仅存进程内存，重启失效</span>
     </div>
     <div class="dp-row dp-inject">
       <label>故障注入</label>
       <button data-inject="llm_timeout" class="chip-btn">LLM 超时</button>
       <button data-inject="tts_fail" class="chip-btn">TTS 失败</button>
       <button data-inject="slow_tts" class="chip-btn">TTS 变慢</button>
-      <button data-inject="video_fail" class="chip-btn">视频失败</button>
+      <button data-inject="event_fail" class="chip-btn">演出降级</button>
     </div>
     <div class="dp-row">
       <label>语音</label>
@@ -109,8 +152,29 @@
       <button id="sampleVoice2" class="chip-btn">示例语音 · 雷</button>
       <span class="dp-note">走同一条 STT 通路</span>
     </div>
+    <div class="dp-row">
+      <label>环境音</label>
+      <button id="ambToggle" class="chip-btn on">雨声底噪</button>
+      <span class="dp-note">程序合成的房间底噪，不盖台词</span>
+    </div>
     <div class="dp-metrics" id="metrics"></div>
     <div class="dp-events" id="events"></div>
+  </aside>
+
+  <!-- 历史记录面板：只读聊天记录（GET /api/history/{sid}）。
+       放右侧抽屉而不是第二个底部抽屉：观测面板已经占了底部 72%，再叠一层就互相遮挡；
+       两个面板互斥（打开一个会收起另一个），关法一致——右上角「关闭」。 -->
+  <aside id="historyPanel" class="history-panel" hidden>
+    <div class="dp-head">
+      <strong>历史记录</strong>
+      <span class="hist-actions">
+        <button id="historyRefresh" class="chip-btn" title="重新拉取">刷新</button>
+        <button id="historyExport" class="chip-btn" title="下载当前 transcript">导出 JSON</button>
+        <button id="historyClose" class="chip-btn">关闭</button>
+      </span>
+    </div>
+    <div id="historyMeta" class="dp-note hist-meta">还没有记录</div>
+    <div id="historyList" class="hist-list"></div>
   </aside>
 
   <div id="toast" class="toast" hidden></div>

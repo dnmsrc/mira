@@ -55,12 +55,24 @@ def main():
 
     sid = json.loads(post("/api/session", {"mode": "mock"}).read())["session_id"]
 
+    # 开场是"沉默"的：她抬眼看你一眼、把相机推开、一行旁白、三个选项，但不主动
+    # 搭话（app/main.py::run_opening 的 docstring，用户反馈"开局莫名其妙"之后改的）。
+    # 旧断言要求 reply + audio，那是沉默开场之前的契约，所以会一直红——不是回归。
     ev, dt = stream_turn(sid, "", kind="open")
     kinds = [e["t"] for e in ev]
     check("open turn streams state", "state" in kinds, str(kinds[:6]))
-    check("open turn has reply", any(e["t"] == "reply" and e["text"] for e in ev))
-    check("open turn has directive", any(e["t"] == "directive" for e in ev))
-    check("open turn has audio or audio_error", {"audio", "audio_error"} & set(kinds) != set())
+    check("open turn stays silent (no reply)", not any(e["t"] == "reply" for e in ev),
+          str(kinds))
+    # audio=整句 mp3（edge/非流式），audio_stream=流式 PCM（侧车）——开场两个都不该有
+    check("open turn has no audio by design",
+          not ({"audio", "audio_stream"} & set(kinds)), str(kinds))
+    check("open turn has narration instead of speech",
+          any(e["t"] == "subtitle" and e.get("silent") for e in ev), str(kinds))
+    check("open turn opens with the look_door action",
+          any(e["t"] == "directive" and e["directive"]["action"] == "look_door" for e in ev),
+          str([e["directive"]["action"] for e in ev if e["t"] == "directive"]))
+    check("open turn offers suggestions to move on",
+          any(e["t"] == "suggest" and e.get("items") for e in ev), str(kinds))
     check("open turn ends with done", kinds[-1] == "done", str(kinds[-3:]))
     check("open turn has no last_train event (content-triggered)",
           not any(e["t"] == "directive" and e["directive"]["event"] == "last_train" for e in ev))
@@ -72,10 +84,15 @@ def main():
     d = [e for e in ev2 if e["t"] == "directive"][0]["directive"]
     check("keyword triggers thunder event", d["event"] == "thunder", str(d))
     check("directive keys complete", set(d) == {"emotion", "action", "scene", "effect", "event"}, str(d))
+    # 枚举不再硬编码在测试里：从卡包快照拿（一份数据三处用，测试也是消费者之一）
+    card = json.loads(urllib.request.urlopen(BASE + "/api/card", timeout=10).read())
+    labels = card["labels"]
     check("directive values in enum",
-          d["emotion"] in ("neutral", "smile", "worried", "surprised", "thinking")
-          and d["action"] in ("idle", "look_window", "sip_coffee", "lean_in", "show_photo", "stand")
-          and d["scene"] in ("cafe_night", "window_close", "lights_dim"))
+          all(d[k] in labels[k] for k in d),
+          f"{d} vs { {k: sorted(v) for k, v in labels.items()} }")
+    check("card snapshot lists assets",
+          bool(card["assets"].get("char")) and bool(card["assets"].get("plate")),
+          str(list(card["assets"])))
 
     # interrupt: start a turn, cancel it, then make sure it stops emitting
     seq_before = json.loads(urllib.request.urlopen(BASE + f"/api/events/{sid}", timeout=10).read())["seq"]

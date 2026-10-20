@@ -83,9 +83,8 @@ def main() -> int:
             page.wait_for_timeout(900)
             page.screenshot(path=str(SHOTS / "07_cinema.png"))
             log("cinema layer visible:",
-                page.evaluate("() => ({ready: document.getElementById('cinema').classList.contains('video-ready'),"
-                              " src: document.getElementById('eventVideo').currentSrc.split('/').pop(),"
-                              " t: document.getElementById('eventVideo').currentTime})"))
+                page.evaluate("() => ({ready: document.getElementById('cinema').classList.contains('still-ready'),"
+                              " src: (document.getElementById('eventStill').currentSrc || '').split('/').pop()})"))
         except Exception as exc:  # noqa: BLE001
             log("no cinema layer:", type(exc).__name__)
         wait_idle(page)

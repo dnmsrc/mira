@@ -14,11 +14,34 @@ tools/llm/cudart/
 # runtime media caches / logs / recordings
 media/
 assets/raw/
-production/reports/
+# production/reports 里只留一件东西：交付要求里的 4 分钟演示录屏（git 不允许在被忽略的
+# 目录里再 re-include 文件，所以父目录要逐层放行）
+production/reports/*
+!production/reports/demo/
+production/reports/demo/*
+!production/reports/demo/mira_demo_4min.mp4
 logs/
 production/session-state/
 # dsh-studio 本地工具状态（不是交付物）
 project.yaml
+# archify / 其他本地工具的状态目录（不是交付物）
+.archify/
+
+# 素材工作区：备份/暂存/抠像中间产物不进货（默认位 char/*.webp 才是交付物）
+app/static/assets/_backup*/
+app/static/assets/_staging/
+app/static/assets/_decontam/
+app/static/assets/_preview/
+# 呼吸帧已被 transform 呼吸取代（manifest 里 breath.deprecated=true），留盘做 A/B 但不进货
+app/static/assets/char/breath_*.webp
+app/static/assets/char/*.tmp
+app/static/assets/char/manifest.json
+app/static/assets/char/md5.txt
+
+# 工作材料：第三方克隆、旧素材、AniSora 抽帧（几百 MB，不进仓库）
+third_party/
+assets/turn/
+assets/legacy/
 
 # OS / editor
 Thumbs.db

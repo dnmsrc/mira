@@ -9,6 +9,7 @@
   body { margin: 0; padding: 18px; background: #070b12; color: #e8eef7;
          font: 13px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
   h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 22px 0 8px; color: rgba(255,255,255,.75); }
   .sub { color: rgba(255,255,255,.45); font-size: 12px; margin-bottom: 16px; }
   .cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
   .card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1);
@@ -20,8 +21,12 @@
   th { color: rgba(255,255,255,.45); font-weight: 500; position: sticky; top: 0; background: #070b12; }
   .err { color: #ff9d9d; }
   .ok { color: #8fe3a8; }
+  .preset { color: #ffd479; }
+  .gen { color: #9ecbff; }
   input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
           color: #fff; border-radius: 8px; padding: 6px 10px; font-size: 12px; width: 200px; }
+  label.tg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+             color: rgba(255,255,255,.6); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -32,11 +37,66 @@
   <thead><tr><th>时间</th><th>事件</th><th>详情</th></tr></thead>
   <tbody id="rows"><tr><td colspan="3">等待数据…</td></tr></tbody>
 </table>
+
+<!-- 决策 trace：她为什么回这句。默认折叠（调试时打开），开关记在 localStorage -->
+<h2>
+  <label class="tg"><input type="checkbox" id="traceOn" /> 显示决策 trace（每轮：拍/关系 → 行为 → 命中哪条预设 → 耗时）</label>
+</h2>
+<table id="traceWrap" style="display:none">
+  <thead><tr><th>时间</th><th>拍 · 关系</th><th>行为</th><th>情绪/动作</th><th>路径</th>
+             <th>预设</th><th>闸门</th><th>台词校正</th><th>首字</th><th>首音</th><th>整轮</th><th>台词</th></tr></thead>
+  <tbody id="traceRows"><tr><td colspan="12">（未开启）</td></tr></tbody>
+</table>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const sidFromUrl = new URLSearchParams(location.search).get("sid");
 if (sidFromUrl) $("sid").value = sidFromUrl;
 $("sid").onchange = () => $("sid").value && refresh();
+
+// trace 面板开关：调试时才看，平时不占屏幕；状态存在浏览器里
+const TRACE_KEY = "mira.trace.on";
+$("traceOn").checked = localStorage.getItem(TRACE_KEY) === "1";
+$("traceOn").onchange = () => {
+  localStorage.setItem(TRACE_KEY, $("traceOn").checked ? "1" : "0");
+  $("traceWrap").style.display = $("traceOn").checked ? "" : "none";
+  if ($("traceOn").checked) refreshTrace();
+};
+$("traceWrap").style.display = $("traceOn").checked ? "" : "none";
+
+async function refreshTrace() {
+  if (!$("traceOn").checked) return;
+  const data = await fetch("/api/trace?n=30").then((r) => r.json()).catch(() => ({}));
+  const items = data.items || [];
+  if (!data.enabled) {
+    $("traceRows").innerHTML = `<tr><td colspan="12">trace 已关闭（MIRA_TRACE=0）</td></tr>`;
+    return;
+  }
+  $("traceRows").innerHTML = items.slice().reverse().map((x) => {
+    const p = x.preset || {};
+    const path = x.path === "preset"
+      ? `<span class="preset">预设</span>` : `<span class="gen">生成</span>`;
+    /* 2026-10-21：补三列——「她当时什么表情/动作」「首句闸门重写了几次」
+       「台词二次校正改了几次」。这三个数以前只能翻 logs，验收时看不到。 */
+    const emo = (x.emotion || "-") + "/" + (x.action || "-");
+    const gate = x.gate_rewrites ? `<b class="bad">重写 ${x.gate_rewrites}</b>` : "0";
+    const dfix = x.dialog_fix_n ? `<b>${x.dialog_fix_n} 次</b>` : "-";
+    return `<tr>
+      <td>${escapeHtml(x.at || "")}</td>
+      <td>${escapeHtml((x.beat || "") + " · " + (x.rel || ""))}</td>
+      <td>${escapeHtml(x.act || "")}</td>
+      <td>${escapeHtml(emo)}</td>
+      <td>${path}</td>
+      <td>${escapeHtml(p.id || "-")}${p.variant !== undefined ? "#" + p.variant : ""}</td>
+      <td>${gate}</td>
+      <td>${dfix}</td>
+      <td>${x.first_text_ms ?? "-"}ms</td>
+      <td>${x.first_audio_ms ?? "-"}ms</td>
+      <td>${x.ms ?? "-"}ms</td>
+      <td>${escapeHtml((x.reply || "").slice(0, 40))}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="12">还没有 trace 记录（先在主页面聊一轮）</td></tr>`;
+}
 
 async function refresh() {
   const sid = $("sid").value.trim();
@@ -47,12 +107,14 @@ async function refresh() {
   const turns = ev.filter((e) => e.kind === "turn_done");
   const errors = ev.filter((e) => e.kind.includes("error"));
   const avg = turns.length ? Math.round(turns.reduce((a, b) => a + (b.ms || 0), 0) / turns.length) : "-";
+  const presetN = health.presets ? health.presets.count : "-";
   $("cards").innerHTML = [
     ["会话 turn", data.seq ?? "-"],
     ["完成 turn", turns.length],
     ["平均 turn 耗时", avg === "-" ? "-" : avg + "ms"],
     ["错误", errors.length],
     ["TTS 缓存", health.tts_cache ?? "-"],
+    ["预设条数", presetN],
     ["provider", health.llm ?? "-"],
   ].map(([k, v]) => `<div class="card"><b>${v}</b><span>${k}</span></div>`).join("");
   $("rows").innerHTML = ev.slice().reverse().map((e) => {
@@ -63,7 +125,8 @@ async function refresh() {
   }).join("") || `<tr><td colspan="3">没有事件（先在主页面跑一轮对话）</td></tr>`;
 }
 function escapeHtml(s){return String(s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));}
-setInterval(() => $("sid").value && refresh(), 2000);
+setInterval(() => { $("sid").value && refresh(); }, 2000);
+setInterval(refreshTrace, 2500);
 </script>
 </body>
 </html>

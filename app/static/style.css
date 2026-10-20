@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #070b12;
   --warm: #f3c98b;
   --amber: #ffb454;
@@ -23,49 +23,66 @@ html, body {
   position: relative;
   width: 100%;
   height: 100dvh;
-  max-width: 560px;      /* 绉诲姩绔紭鍏堬紝妗岄潰绔眳涓垚绔栧睆鍗＄墖 */
+  max-width: 560px;      /* 竖屏优先：桌面端也居中成一张竖屏卡片 */
   margin: 0 auto;
   overflow: hidden;
   background: #05080d;
   box-shadow: 0 0 80px rgba(0, 0, 0, 0.8);
 }
 
-/* ---------------------------------------------------------------- 鍦烘櫙灞?   鍥惧眰椤哄簭锛堜笅 鈫?涓婏級锛氳儗鏅澘 鈫?鑳屾櫙姘涘洿瑙嗛 鈫?瑙掕壊璐寸墖 鈫?鏆楀満 鈫?闆?鈫?闂數 鈫?棰楃矑
-   鑳屾櫙鏉匡紙plate锛夊拰瑙掕壊锛坰prite锛屽甫 alpha锛夋槸涓ゅ紶鐙珛绱犳潗锛?     路 鎹㈣〃鎯?/ 鎹㈣鑹?= 鍙贰鍏ユ贰鍑鸿鑹插眰锛岃儗鏅儚绱犱竴涓兘涓嶅姩
-     路 鎹㈤暅澶?= 鍙缉鏀炬暣涓?.stage锛岃儗鏅笌瑙掕壊鍚屾敞鍐岀偣锛屼笉浼氫簰鐩搁敊浣?*/
+/* ---------------------------------------------------------------- 场景层
+   图层顺序（下 → 上）：背景板 → 角色贴片 → 暗角 → 雨痕 → 车灯横扫 → 闪电 → 颗粒
+   背景板（plate）和角色（sprite，带 alpha）是两张独立素材：换表情只淡化角色层，背景像素一个都不动；换镜头只缩放整个 .stage，两层同注册点，不会互相错位。 */
 .stage {
   position: absolute; inset: 0; overflow: hidden;
   transform-origin: 50% 62%;
-  transition: transform 1200ms cubic-bezier(.2, .7, .2, 1);
+  /* 2026-10-20 第二轮"闪"：这里原来有 transition: transform 1200ms + push/close 两档
+     scale(1.02/1.03)。整台舞台在 1.2 秒内被连续缩放 = 背景板和人像的每一个像素每帧都
+     重新采样一次，是"说话/换表情时闪"的最大来源（cam 相位实测 stage transform 变化
+     49 次/秒）。相机推近只留 2% 的观感收益，却把整幅画面变成 60Hz 重采样，不值得：
+     直接取消。transform 保留给将来做"整数像素平移"的运镜（那种不会重采样）。 */
   will-change: transform;
 }
 
-.layer, .bg-loop, .sprite {
+.layer, .sprite {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
-  object-position: 50% 22%;
+  /* 新素材是「隔桌中近景」：重心在她和桌面之间，所以取 46% 而不是 22%，
+     否则会把前景的两只杯子和桌面裁掉——那两只杯子是「她在等人」的证据。 */
+  object-position: 50% 46%;
   pointer-events: none;
   user-select: none;
 }
 
-/* 鑳屾櫙鏉匡細甯搁┗銆佷笉闅忚鑹插彉鍖?*/
+/* 背景板：常驻、不随角色变化 */
 .layer { opacity: 0; transition: opacity 700ms ease; }
 .layer.is-front { opacity: 1; }
 
-/* 瑙掕壊璐寸墖锛氶€忔槑鎶犲儚锛屽彧浜ゅ弶娣″寲杩欎竴灞?*/
+/* 角色贴片：透明抠像，只交叉淡化这一层 */
 .char-layer { position: absolute; inset: 0; transform-origin: 50% 100%; will-change: transform; }
 .sprite { opacity: 0; transition: opacity 380ms ease; }
 .sprite.is-front { opacity: 1; }
 
-/* 鐩告満锛氫綔鐢ㄤ簬鏁翠釜鑸炲彴锛堣儗鏅?+ 瑙掕壊涓€璧凤級锛屼笉閲嶇粯浠讳綍绱犳潗 */
-.stage[data-cam="push"]  { transform: scale(1.07) translateY(-0.6%); }
-.stage[data-cam="close"] { transform: scale(1.20) translate(-2.5%, -1.2%); }
+/* 动作帧序列层（#charC）：播多帧动作时盖在 A/B 之上，播完淡出、交回静态表情层。
+   为什么单独一层：A/B 的 380ms 叠化是给「换表情/换姿势」用的（一帧→一帧），
+   而连续帧要的是 80–120ms 的**硬切**；挤进同一层会被 380ms 过渡糊成鬼影，
+   这正是用户说的「卡顿与闪速」。序列层自己只做「出现/消失」两次 140ms 淡入淡出。 */
+.sprite.anim { z-index: 3; transition: opacity 140ms ease; }
+.sprite.anim.on { opacity: 1; }
 
-/* 鑳屾櫙姘涘洿寰幆锛坕dle_loop.mp4 鍙湁闆?鐏厜锛屾病鏈変汉鐗╋級銆傝鑹插眰濮嬬粓鍘嬪湪瀹冧笂闈紝
-   鎵€浠ユ皼鍥村惊鐜竴鐩村湪璺戜篃涓嶄細鍜岃〃鎯呭垏鎹㈡墦鏋躲€?*/
-.bg-loop { opacity: 0; transition: opacity 900ms ease; }
-.bg-loop.on { opacity: 1; }
+/* 相机：作用于整个舞台（背景 + 角色一起），不重绘任何素材。
+   P0-6：原来 push 1.07 / close 1.20 在「头像贴片」上等于把脸怼到镜头前（用户实测
+   「离屏幕太近」）。整帧资产下景别由素材决定，相机只做很轻的推近（≤3%），
+   作用从「换景别」降级为「呼吸感的运镜」。
+   2026-10-20 用户第 9 条再次点「离屏幕太近」：角色层另外缩到 0.90（见 app.js CHAR_FIT），
+   这里的推近也跟着压到 2%，别把退后的一步又推回去。 */
+/* 相机：2026-10-20 第二轮取消 scale 推拉（理由见 .stage）。data-cam 属性仍然由 app.js
+   写入，留给将来"整数像素平移"或灯光变化用；这里刻意不给任何 transform 规则，
+   所以现在它不产生也不消耗任何重绘。 */
+
+/* 待机氛围：**没有视频**（2026-10-20 全删）。背景就一张静帧，动的只有角色层和
+   雨痕/颗粒这两层纯 CSS 效果 —— 这样"背景在动"永远不可能发生。 */
 
 .dim {
   position: absolute; inset: 0;
@@ -81,24 +98,26 @@ html, body {
     linear-gradient(180deg, rgba(2,4,8,.72) 0%, rgba(2,4,8,.55) 45%, rgba(2,4,8,.94) 100%);
 }
 
-/* 闆?*/
+/* 雨后：不是正在下雨，所以这里不再是「雨幕」，而是玻璃上缓缓滑落的水痕。
+   真正让人听出「在店里」的是 Web Audio 合成的屋檐滴水底噪（见 app.js 的 AMB）。 */
 .rain { position: absolute; inset: -10% -10%; pointer-events: none; opacity: 0; transition: opacity 900ms ease; }
-.rain.on { opacity: .55; }
+.rain.on { opacity: .22; }
 .rain i {
-  position: absolute; top: -20%; width: 1px; height: 22%;
-  background: linear-gradient(180deg, transparent, rgba(200, 225, 255, .85));
-  animation: rainfall linear infinite;
-  filter: blur(.3px);
+  position: absolute; top: -8%; width: 1px; height: 7%;
+  background: linear-gradient(180deg, transparent, rgba(205, 228, 255, .7), transparent);
+  animation: raindrip linear infinite;
+  filter: blur(.4px);
 }
-.rain i:nth-child(1) { left: 18%; animation-duration: .72s; animation-delay: -.2s; }
-.rain i:nth-child(2) { left: 47%; animation-duration: .58s; animation-delay: -.5s; height: 18%; opacity: .8; }
-.rain i:nth-child(3) { left: 79%; animation-duration: .66s; animation-delay: -.35s; }
-@keyframes rainfall {
-  from { transform: translate3d(0, -30%, 0) rotate(8deg); }
-  to   { transform: translate3d(-6%, 130%, 0) rotate(8deg); }
+.rain i:nth-child(1) { left: 18%; animation-duration: 5.6s; animation-delay: -.9s; }
+.rain i:nth-child(2) { left: 47%; animation-duration: 7.2s; animation-delay: -2.1s; height: 5%; }
+.rain i:nth-child(3) { left: 79%; animation-duration: 6.4s; animation-delay: -3.4s; }
+@keyframes raindrip {
+  0%   { transform: translate3d(0, -20%, 0); opacity: 0; }
+  25%  { opacity: .9; }
+  100% { transform: translate3d(-1.5%, 140%, 0); opacity: 0; }
 }
 
-/* 闂數琛ュ厜 */
+/* 闪电补光 */
 .flash {
   position: absolute; inset: 0; pointer-events: none; opacity: 0;
   background: radial-gradient(80% 60% at 68% 26%, rgba(220, 236, 255, .95), rgba(200, 225, 255, .35) 45%, transparent 72%);
@@ -115,17 +134,20 @@ html, body {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='.6'/></svg>");
 }
 
-/* 瑙掕壊鍛煎惛/鍊惧惉寰姩锛氬彧鍔ㄨ鑹插眰锛岃儗鏅澘瀹屽叏闈欐銆?   缂╂斁鍙粠 1.0 鍚戜笂锛岄伩鍏嶆妸鎶犲儚搴曡竟锛堣鍚у彴閬綇鐨勯偅鏉＄嚎锛夐湶鍑烘潵銆?*/
-#app[data-state="idle"] .char-layer { animation: breathe 7.5s ease-in-out infinite; }
-#app[data-state="listening"] .char-layer { animation: lean 1.6s ease-in-out 1; }
-#app[data-state="thinking"] .char-layer { animation: think 4s ease-in-out infinite; }
-#app[data-state="speaking"] .char-layer { animation: speak 2.4s ease-in-out infinite; }
-@keyframes breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-0.25%) scale(1.004); } }
-@keyframes lean { 0% { transform: scale(1); } 55% { transform: translateY(0.3%) scale(1.012); } 100% { transform: scale(1); } }
-@keyframes think { 0%, 100% { transform: translateX(0) scale(1); } 50% { transform: translateX(-0.4%) scale(1.002); } }
-@keyframes speak { 0%, 100% { transform: scale(1); } 35% { transform: translateY(-0.2%) scale(1.006); } 70% { transform: scale(1.003); } }
+/* 角色呼吸/倾听微动：只动角色层，背景板完全静止。缩放只从 1.0 向上，避免把抠像底边（被吧台遮住的那条线）露出来。 */
+/* 角色呼吸/倾听/说话微动：改由 app.js 的 rAF 统一写 transform（MOTION）。
+   为什么不用 CSS keyframes：呼吸幅度要跟状态耦合、说话起伏要跟真实音频包络耦合，
+   两套动画同时写 transform 会互相覆盖，结果就是"时而抽一下"。
+   所以这里只保留：没有 JS（极端降级）时的一点点呼吸，避免完全静止。 */
+@keyframes breathe-fallback { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-0.5%); } }
+@media (prefers-reduced-motion: reduce) {
+  .char-layer { animation: none !important; }
+}
 
-/* ---------------------------------------------------------------- 瑙嗛婕斿嚭灞?*/
+/* ---------------------------------------------------------------- 演出层（静帧）
+   原来这里播 MP4（thunder / photo_reveal / last_train）。那几段是 AniSora 另开的机位，
+   和底板的光线/景深对不上，一播就是"背景换台"；现在改成：静帧 + 缓慢推近。
+   推近用 scale，不动 translate —— 和角色层一个道理，画面中心不能移。 */
 .cinema {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -133,15 +155,18 @@ html, body {
   opacity: 0; pointer-events: none;
   transition: opacity 420ms ease, background 420ms ease;
   z-index: 30;
+  overflow: hidden;
 }
-.cinema.show { opacity: 1; background: rgba(2, 4, 8, .82); }.cinema video {
+.cinema.show { opacity: 1; background: rgba(2, 4, 8, .82); }
+.cinema img {
   width: 100%; height: 100%;
   object-fit: cover;
-  border-radius: 0;
   opacity: 0; transition: opacity 360ms ease;
   transform: scale(1.01);
 }
-.cinema.video-ready video { opacity: 1; }
+.cinema.still-ready img { opacity: 1; }
+/* 原来这里是 stillpush：6 秒里 scale 1.00 → 1.045 的"缓慢推近"，等于整张照片 6 秒
+   不间断重采样（同一个"闪"的成因）。改成留白 + 淡入，不再动像素。 */
 .cinema-badge {
   position: absolute; bottom: 22%;
   font-size: 12px; letter-spacing: .12em; color: rgba(255, 255, 255, .78);
@@ -150,7 +175,26 @@ html, body {
   opacity: 0; transition: opacity 200ms;
 }
 .cinema-badge.show { opacity: 1; }
-.cinema.fallback video { display: none; }
+.cinema.fallback img { display: none; }
+
+/* 末班车：车灯从窗外扫过。原来这是 last_train.mp4，删了视频之后改成一条光带，
+   2.6s 横穿画面右上方（窗的位置），比视频更轻，但"有东西经过窗外"读得出来。 */
+.sweep {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  background: linear-gradient(105deg,
+      transparent 0%, rgba(255, 226, 178, 0) 34%,
+      rgba(255, 232, 196, .55) 47%, rgba(255, 244, 220, .85) 50%,
+      rgba(255, 232, 196, .45) 53%, transparent 68%);
+  mix-blend-mode: screen;
+  transform: translateX(-70%);
+}
+.sweep.on { animation: carsweep 2.6s cubic-bezier(.35, .05, .3, 1) forwards; }
+@keyframes carsweep {
+  0%   { opacity: 0;   transform: translateX(-72%); }
+  18%  { opacity: .95; }
+  70%  { opacity: .75; }
+  100% { opacity: 0;   transform: translateX(72%); }
+}
 
 /* ---------------------------------------------------------------- HUD */
 .hud {
@@ -160,6 +204,7 @@ html, body {
   z-index: 42;
 }
 .who { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.hud-right { display: flex; align-items: center; gap: 8px; }
 .who .name { font-weight: 600; letter-spacing: .04em; }
 .who .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.4); }
 .state-label { color: rgba(255, 255, 255, .62); }
@@ -224,6 +269,26 @@ html, body {
   background: linear-gradient(180deg, transparent, rgba(3, 6, 11, .72) 38%, rgba(3, 6, 11, .92));
 }
 
+/* 旁白条：她没说话时的系统叙述。与台词**不在同一条**。
+   视觉上必须一眼看出「这不是她说的话」：左竖线、冷色、斜体、小一号、无发光描边。 */
+.narration-bar {
+  display: flex; align-items: center;
+  margin: 0 4px 8px;
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: opacity 220ms ease, max-height 220ms ease;
+}
+.narration-bar.on { max-height: 54px; opacity: 1; }
+.narration-bar::before {
+  content: ""; flex: none; width: 2px; align-self: stretch;
+  margin: 3px 10px 3px 0; border-radius: 2px;
+  background: linear-gradient(180deg, transparent, rgba(159, 179, 204, .85), transparent);
+}
+#narrationText {
+  font-size: 14px; line-height: 1.5; color: #9fb3cc;
+  font-style: italic; letter-spacing: .01em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, .5);
+}
+
 .subtitle {
   min-height: 58px;
   display: flex; align-items: flex-end;
@@ -235,6 +300,15 @@ html, body {
   transition: opacity 260ms;
 }
 .subtitle.dim { opacity: 0; }
+/* 旁白（陌生人状态的兜底字幕）：没有音频，不是她在说话。
+   与台词的区别必须在画面上一眼可见——斜体、偏冷、字号略小、不带发光描边。 */
+.subtitle.narration {
+  color: #c3cfdf;
+  font-style: italic;
+  font-size: 15.5px;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, .7);
+  opacity: .92;
+}
 .caret {
   display: inline-block; width: 2px; height: 1.05em; margin-left: 3px;
   background: var(--amber); opacity: 0; vertical-align: -0.15em;
@@ -293,7 +367,7 @@ html, body {
 .dock-hint #hint { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .latency { color: rgba(255, 255, 255, .5); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* ---------------------------------------------------------------- 瑙傛祴闈㈡澘 */
+/* ---------------------------------------------------------------- 观测面板 */
 .debug-panel[hidden] { display: none; }
 .debug-panel {
   position: absolute; inset: auto 0 0 0; z-index: 60;
@@ -326,6 +400,69 @@ html, body {
 .dp-events div { padding: 1px 0; border-bottom: 1px dotted rgba(255, 255, 255, .05); }
 .dp-events em { color: #8fd6ff; font-style: normal; }
 .dp-events .err { color: #ff9d9d; }
+/* HTML 的 hidden 属性会被 .dp-row { display: flex } 盖掉，必须显式让位，
+   否则「选 DeepSeek 才显示 key 输入行」在页面上根本不生效。 */
+.dp-row[hidden] { display: none; }
+/* 服务端当前实际 provider：跟在 select 下面一行，和输入框左对齐 */
+.srv-mode { display: block; margin: -2px 0 8px 70px; line-height: 1.5; }
+/* auto/mock/strata 不在前端两档里时标黄：提醒「选的档 ≠ 服务端实际档」 */
+.srv-mode.warn { color: #ffd28a; }
+/* key 说明单独占一行（flex-basis:100% 强制换行），不把输入框挤成一条缝 */
+.dp-cloud-hint { flex: 1 0 100%; padding-left: 70px; line-height: 1.55; }
+
+/* ---------------------------------------------------------------- 历史记录面板
+   和观测面板同一套材质（CSS 变量 + 玻璃底），但走右侧抽屉：
+   观测面板是底部抽屉，两个都从底部弹会互相盖住。 */
+.history-panel[hidden] { display: none; }
+.history-panel {
+  position: absolute; top: 56px; right: 8px; bottom: 96px;
+  z-index: 61;                 /* 比观测面板(60)高一层：互斥之后仍保证点得到 */
+  width: min(88%, 460px);
+  display: flex; flex-direction: column;
+  background: rgba(6, 10, 17, .96);
+  border: 1px solid var(--glass-line);
+  border-radius: 16px;
+  padding: 12px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+  font-size: 12px;
+  overflow: hidden;
+}
+.hist-actions { display: flex; gap: 6px; }
+.hist-meta { margin: -2px 0 8px; line-height: 1.5; }
+.hist-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 2px 2px 6px;
+}
+.hist-item { display: flex; flex-direction: column; gap: 3px; max-width: 100%; }
+.hist-item.user { align-items: flex-end; }
+.hist-item.assistant { align-items: flex-start; }
+.hist-bubble {
+  max-width: 86%;
+  padding: 8px 10px; border-radius: 13px;
+  font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+.hist-item.user .hist-bubble {
+  background: rgba(255, 180, 84, .16);
+  border: 1px solid rgba(255, 180, 84, .3);
+  border-bottom-right-radius: 4px;
+  color: #fdf3e3;
+}
+.hist-item.assistant .hist-bubble {
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid var(--glass-line);
+  border-bottom-left-radius: 4px;
+  color: #eef2f7;
+}
+/* 气泡下角的小字：第N轮 · 拍N · preset/gen · XXXms（有值才拼进来） */
+.hist-meta-line {
+  font-size: 10.5px; line-height: 1.4;
+  color: rgba(255, 255, 255, .42);
+  font-variant-numeric: tabular-nums;
+}
+.hist-empty { color: rgba(255, 255, 255, .4); text-align: center; padding: 20px 0; line-height: 1.7; }
 
 /* ---------------------------------------------------------------- toast */
 .toast {
@@ -371,3 +508,93 @@ html, body {
 
 .mic.recording { box-shadow: 0 0 calc(4px + var(--lvl, 0) * 30px) rgba(255, 94, 94, .55); }
 .mic.recording .mic-ring { animation: none; opacity: .9; transform: scale(calc(1 + var(--lvl, 0) * .5)); }
+
+/* ------------------------------------------------------- 录音条（可见的录音反馈） */
+.rec-bar[hidden] { display: none; }
+.rec-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 2px 0; padding: 8px 10px;
+  border-radius: 13px;
+  background: rgba(255, 94, 94, .13);
+  border: 1px solid rgba(255, 94, 94, .34);
+  color: #ffdcdc; font-size: 12px; line-height: 1;
+  backdrop-filter: blur(12px);
+  animation: recIn 180ms ease-out;
+}
+@keyframes recIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.rec-dot {
+  width: 8px; height: 8px; flex: none; border-radius: 50%;
+  background: #ff5e5e; animation: recPulse 1.15s ease-out infinite;
+}
+@keyframes recPulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 94, 94, .6); }
+  70% { box-shadow: 0 0 0 7px rgba(255, 94, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 94, 94, 0); }
+}
+.rec-time { font-variant-numeric: tabular-nums; font-weight: 600; flex: none; }
+.rec-tip { flex: 1; opacity: .86; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-cancel {
+  flex: none; font: inherit; font-size: 11px; line-height: 1;
+  color: #ffdcdc; background: transparent;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 9px; padding: 4px 9px; cursor: pointer;
+}
+
+/* 帧间交叉淡入（manifest playback.crossfadeMs = 90）。
+   为什么要两张 img 交替：连续帧是「同一姿势换 denoise 重画」，逐像素差中位数 34/255，
+   110ms 硬切会像描线沸腾；90ms 交叉淡入能压掉大部分闪烁，又不至于把动作糊没。
+   #charC 本体只负责「整层出现/消失」（140ms），帧内透明度由 .frame 自己管。 */
+.sprite.anim { overflow: hidden; pointer-events: none; }
+.sprite.anim .frame {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: 50% 46%;
+  opacity: 0; transition: opacity 90ms linear;
+}
+.sprite.anim .frame.show { opacity: 1; }
+
+/* ---------------------------------------------------------------- 桌面端（题目 §1「桌面端可以正常体验」）
+   2026-10-21：桌面端原来就是一张 560px 的竖屏卡片贴在一块纯黑背景上——能玩，但看起来像
+   手机模拟器，两侧大片死黑。这里只做「不改布局」的桌面增强（移动端完全不受影响）：
+   1. 页面铺一层同一张场景板的超高斯模糊底图，两侧不再是死黑，而是这家咖啡馆的余光；
+   2. 卡片略放宽到 600px、加一圈更深的投影，让它像"嵌在场景里的一块取景框"；
+   3. 高度不足 820px 的笔记本（1280×720 之类）把卡片改成铺满可视高度，避免上下被裁。
+   判据：只调视觉，不碰舞台内的任何注册点/贴片尺寸（那些是移动端验收过的）。 */
+@media (min-width: 820px) {
+  /* 底图不能画在 body 的 background 上：body 自己是不透明底色，而 multiply 混合会把本来就
+     很暗的夜戏场景再压黑（2026-10-21 第一次尝试就是这么失败的）。改成两层 fixed 伪元素：
+       ::before = 同一张场景板，模糊 + 提亮，铺满两侧；
+       ::after  = 一层径向暗角，把注意力收回到中间的取景框。
+     负 z-index 的伪元素画在 html 画布底色之上、#app 之下，正好夹在中间。 */
+  /* body 必须透明：body 自己的不透明底色会盖住负 z-index 的伪元素（画序：画布底 → 负 z 子层
+     → body 背景盒 → 内容）。第一版就是把底图写在 body background 上、第二版忘了清 body 的
+     底色，两次都只剩纯黑两侧——2026-10-21 实测。 */
+  body { background: transparent; }
+  body::before {
+    content: "";
+    position: fixed; inset: -12vw;
+    background: url("/static/assets/plate/cafe_night.webp") center 46% / cover no-repeat;
+    filter: blur(42px) brightness(.62) saturate(1.05);
+    opacity: .9;
+    z-index: -2;
+    pointer-events: none;
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0;
+    background: radial-gradient(120% 95% at 50% 45%,
+                rgba(5, 8, 13, .22) 0%, rgba(5, 8, 13, .78) 68%, rgba(5, 8, 13, .95) 100%);
+    z-index: -1;
+    pointer-events: none;
+  }
+  #app {
+    max-width: 600px;
+    border-left: 1px solid rgba(255, 255, 255, .06);
+    border-right: 1px solid rgba(255, 255, 255, .06);
+    /* 阴影原来写 0 0 120px rgba(0,0,0,.92)：它把两侧 120px 全糊成黑色，底图等于白铺。
+       桌面端改成柔和的暗角（60px / .45），让两侧还能看见咖啡馆的余光。 */
+    box-shadow: 0 0 60px rgba(0, 0, 0, .45), 0 0 2px rgba(255, 180, 84, .12);
+  }
+}
+@media (min-width: 820px) and (max-height: 820px) {
+  #app { max-width: min(600px, calc(100dvh * 0.5)); }
+}

@@ -1,18 +1,27 @@
-# Start the local LLM (Qwen3-4B-Instruct-2507, OpenAI-compatible, no API key).
+# Start the local LLM (llama.cpp + Qwen3.8-4B Q4_K_M, OpenAI-compatible).
 #   powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1
-# Then run the app with LLM_MODE=llama (start.ps1 reads that env var).
-# Reuses the CUDA torch shipped with the local AniSora bundle; ASCII only.
+# Then run the app with LLM_MODE=llama (start.ps1 auto-detects this port).
+# ASCII only on purpose: Windows PowerShell 5.1 reads non-BOM files as ANSI.
+#
+# Why llama.cpp instead of the earlier transformers script: the CUDA build ships its
+# own runtime DLLs (cudart/cublas next to the exe), loads in ~5-15s and does not
+# depend on the 25GB AniSora python runtime. Same OpenAI /v1 API either way.
 
 $ErrorActionPreference = "Stop"
-$root = "D:\interview\mira"
-$py = Join-Path $root "models\anisora\wan\runtime\python.exe"
-$server = Join-Path $root "tools\llm\serve_qwen.py"
-$model = Join-Path $root "models\llm\Qwen3-4B-Instruct-2507"
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$exe = Join-Path $root "tools\llm\llama\llama-server.exe"
+$model = Join-Path $root "models\llm\Qwen3.8-4B-Q4_K_M.gguf"
+$port = if ($env:LLM_PORT) { $env:LLM_PORT } else { "8080" }
 
-if (-not (Test-Path $py)) { throw "bundled CUDA runtime not found: $py" }
-if (-not (Test-Path $server)) { throw "server script not found: $server" }
-if (-not (Test-Path (Join-Path $model "config.json"))) { throw "model weights missing: $model" }
+if (-not (Test-Path $exe)) { throw "llama-server not found: $exe" }
+if (-not (Test-Path $model)) { throw "model weights missing: $model" }
 
-$port = if ($env:LLM_PORT) { $env:LLM_PORT } else { "8081" }
-Write-Host "[llm] Qwen3-4B on http://127.0.0.1:$port  (first load ~10-30s)"
-& $py $server --model $model --port $port
+Write-Host "[llm] llama.cpp + Qwen3-4B (Q4_K_M) -> http://127.0.0.1:$port  (first load ~5-15s)"
+Write-Host "[llm] keep this window open; then run start.ps1 in another window"
+
+Push-Location $root
+try {
+    & $exe -m $model -c 8192 -ngl 99 -fa on --host 127.0.0.1 --port $port --threads 8 --no-webui
+} finally {
+    Pop-Location
+}
