@@ -38,6 +38,20 @@ app/static/assets/char/*.tmp
 app/static/assets/char/manifest.json
 app/static/assets/char/md5.txt
 
+# v17：素材跟着卡走（cards/<id>/assets/，见 docs/CARD_ASSETS_LAYOUT_V17.md）。
+# 同一批忽略规则跟着搬，另外补两条：迁移前的整棵备份、被下架的坏帧/原图。
+app/static/assets.bak_v16/
+cards/*/assets/char/manifest.json
+cards/*/assets/char/md5.txt
+cards/*/assets/char/*.tmp
+cards/*/assets/char/breath_*.webp
+cards/*/assets/char/_parked/
+cards/*/assets/char/_raw_v15/
+cards/*/assets/*/_backup*/
+cards/*/assets/*/_staging/
+cards/*/assets/*/_decontam/
+cards/*/assets/*/_preview/
+
 # 工作材料：第三方克隆、旧素材、AniSora 抽帧（几百 MB，不进仓库）
 third_party/
 assets/turn/

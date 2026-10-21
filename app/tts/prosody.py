@@ -30,13 +30,15 @@ EMOTION_BASE: dict[str, dict] = {
 }
 
 # 情绪 → 句内下倾幅度(Hz/小句)、小句间停顿时长缩放、混响湿度、气口强度
+# 2026-10-21 13:4x **wet 全部改 0（干声）**：用户反馈「有回音」，回音就是 0.55s 房间卷积。
+# 原来 0.12–0.20 的数值留着做注释，想加回房间时改回来即可（客户端 bus 已在 app.js 里断开）。
 EMOTION_SHAPE: dict[str, dict] = {
-    "neutral":   {"decl": 1.6, "gap_scale": 1.00, "wet": 0.16, "breath": 0.55, "final_slow": -4.0},
-    "smile":     {"decl": 1.1, "gap_scale": 0.90, "wet": 0.13, "breath": 0.65, "final_slow": -2.0},
-    "worried":   {"decl": 2.4, "gap_scale": 1.25, "wet": 0.19, "breath": 0.75, "final_slow": -6.0},
-    "surprised": {"decl": 0.6, "gap_scale": 0.80, "wet": 0.12, "breath": 0.35, "final_slow": -1.0},
-    "thinking":  {"decl": 2.1, "gap_scale": 1.35, "wet": 0.20, "breath": 0.85, "final_slow": -7.0},
-    "listen":    {"decl": 1.4, "gap_scale": 1.05, "wet": 0.16, "breath": 0.50, "final_slow": -4.0},
+    "neutral":   {"decl": 1.6, "gap_scale": 1.00, "wet": 0.0, "breath": 0.55, "final_slow": -4.0},
+    "smile":     {"decl": 1.1, "gap_scale": 0.90, "wet": 0.0, "breath": 0.65, "final_slow": -2.0},
+    "worried":   {"decl": 2.4, "gap_scale": 1.25, "wet": 0.0, "breath": 0.75, "final_slow": -6.0},
+    "surprised": {"decl": 0.6, "gap_scale": 0.80, "wet": 0.0, "breath": 0.35, "final_slow": -1.0},
+    "thinking":  {"decl": 2.1, "gap_scale": 1.35, "wet": 0.0, "breath": 0.85, "final_slow": -7.0},
+    "listen":    {"decl": 1.4, "gap_scale": 1.05, "wet": 0.0, "breath": 0.50, "final_slow": -4.0},
 }
 
 # 标点 → 基础停顿（毫秒）。比卡包 gaps_ms 更细，因为现在由合成端统一写入音频。

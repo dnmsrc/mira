@@ -10,28 +10,58 @@
 
 const $ = (id) => document.getElementById(id);
 
+// 结局「再看一遍」：整页重来（会话状态、故事节点、时钟全部回到 20:30）
+document.addEventListener("DOMContentLoaded", () => {
+  const b = document.getElementById("endingRestart");
+  if (b) b.addEventListener("click", () => location.reload());
+});
+
 /* 资源模型：场景板（plate，无人物）和角色贴片（sprite，带 alpha）是两套独立素材。
    换表情只切 char 层、背景像素不动；换镜头只对 .stage 做 transform，两层一起缩放。 */
-const ASSETS = {
+
+/* 素材缓存版本：**改任何图片就 +1**。
+   app.js 从 v11 起就用 `?v=14` 防旧 JS，但图片一直没有版本号。后果是实测过的：
+   17:53 把 phone_call.webp 从「整身版」换成「半身版」后，已经开着的页面仍然显示旧图 ——
+   画面里她的脚悬在桌面上方，看着就是穿帮。素材换过之后，光换文件不够，URL 也得换。 */
+const ASSET_V = "17";   // 17：neutral.webp 换成无损版（96KB lossy → 406KB lossless，脸/发丝不再糊）
+
+/* ---------------------------------------------------------- 素材基址（v17）
+   素材不再塞在 /static/assets（那是**所有卡共用**的一棵树，第二张卡必然撞名），
+   而是跟着卡走：一张卡一个前缀 /card-assets/<卡id>/，服务端启动时按发现的卡逐张挂载。
+   GET /api/card 会下发 assets_base / assets_manifest，并且 assets 里已经是**绝对 URL**
+   —— 所以前端不拼任何目录名，下面的 ASSET_REL 只是「/api/card 还没回来」时的兜底形状。
+   加一张卡：改卡、放图；这个文件一个字都不用动。见 docs/CARD_ASSETS_LAYOUT_V17.md。 */
+let ASSET_BASE = "/static/assets/";                            // 兜底 = v16 旧布局
+let ASSET_MANIFEST = ASSET_BASE + "char/manifest.json";
+
+const assetUrl = (rel) =>
+  `${ASSET_BASE}${String(rel).replace(/^\.?\//, "")}?v=${ASSET_V}`;
+
+/* 素材清单的**相对形状**（唯一写死目录的地方是上面 ASSET_BASE 的默认值）：
+   setAssetBase() 换基址时按它整棵重算，所以拿不到卡包快照时画面也不会白。 */
+const ASSET_REL = {
   char: {
-    neutral: "/static/assets/char/neutral.webp",
-    smile: "/static/assets/char/smile.webp",
-    worried: "/static/assets/char/worried.webp",
-    surprised: "/static/assets/char/surprised.webp",
-    thinking: "/static/assets/char/thinking.webp",
-    listen: "/static/assets/char/listen.webp",
+    neutral: "char/neutral.webp",
+    smile: "char/smile.webp",
+    worried: "char/worried.webp",
+    surprised: "char/surprised.webp",
+    thinking: "char/thinking.webp",
+    listen: "char/listen.webp",
   },
   pose: {
-    look_window: "/static/assets/char/look_window.webp",
-    sip_coffee: "/static/assets/char/sip_coffee.webp",
-    lean_in: "/static/assets/char/lean_in.webp",
-    show_photo: "/static/assets/char/show_photo.webp",
-    stand: "/static/assets/char/stand.webp",
+    look_window: "char/look_window.webp",
+    sip_coffee: "char/sip_coffee.webp",
+    lean_in: "char/lean_in.webp",
+    phone_call: "char/phone_call.webp",
+    stand: "char/stand.webp",
   },
-  plate: { cafe_night: "/static/assets/plate/cafe_night.webp" },
-  insert: { polaroid: "/static/assets/insert/polaroid.jpg" },
-  /* 动作的**多帧序列**（动作名 → 帧 URL 数组）。由 loadSeqManifest() 从
-     static/assets/char/manifest.json 填进来，所以换素材不用改这份代码。
+  plate: { cafe_night: "plate/cafe_night.webp" },
+  /* v14：照片道具整组删除（新故事没有照片）。结局图与粒子点在这里声明。 */
+  ending: { friend: "ending/friend.webp",
+            stranger: "ending/stranger.webp" },
+  fx: { softdot: "fx/softdot.webp" },
+  /* 动作的**多帧序列**（动作名 → 帧 URL 数组）。由 loadSeqManifest() 从卡里的
+     char/manifest.json 填进来（v17 由服务端把帧路径绝对化后再下发），所以换素材不用改这份代码。
      为什么要多帧：用户实测「卡顿与闪速」——一张静止姿势 + 380ms 叠化，
      动作看起来是"跳"过去的；连续 4–8 帧硬切才有动作的方向感。 */
   seq: {},
@@ -39,13 +69,46 @@ const ASSETS = {
      演出改成静帧 + 程序合成，见 triggerEvent()。 */
 };
 
+/* 按当前基址重算整棵 ASSETS。只改声明，不改任何调用点：
+   paint()/showSprite()/preload() 拿到的就已经是带版本号的绝对 URL。 */
+const ASSETS = {};
+function stampAssets() {
+  Object.keys(ASSET_REL).forEach((group) => {
+    const g = ASSET_REL[group];
+    if (Array.isArray(g)) { ASSETS[group] = g.map(assetUrl); return; }
+    const out = {};
+    Object.keys(g || {}).forEach((k) => {
+      const v = g[k];
+      if (typeof v === "string") out[k] = assetUrl(v);
+      else if (Array.isArray(v)) out[k] = v.map(assetUrl);
+      else if (v && typeof v === "object") {
+        out[k] = {};
+        Object.keys(v).forEach((k2) => {
+          out[k][k2] = typeof v[k2] === "string" ? assetUrl(v[k2]) : v[k2];
+        });
+      }
+    });
+    ASSETS[group] = out;
+  });
+}
+
+/* 换卡/换布局：基址一变，整棵素材（含清单地址）跟着变。 */
+function setAssetBase(base) {
+  if (!base || typeof base !== "string") return false;
+  ASSET_BASE = base.endsWith("/") ? base : `${base}/`;
+  ASSET_MANIFEST = `${ASSET_BASE}char/manifest.json`;
+  stampAssets();
+  return true;
+}
+stampAssets();
+
 const LABEL = {
   emotion: { neutral: "平静", smile: "微笑", worried: "担心", surprised: "惊讶", thinking: "思索", listen: "倾听" },
   action: { idle: "待机", look_window: "望向窗外", sip_coffee: "抿了一口咖啡", lean_in: "靠近了些",
-            show_photo: "掏出照片", stand: "站起身" },
+            phone_call: "接起电话", stand: "站起身" },
   scene: { cafe_night: "常驻机位 · 吧台", window_close: "镜头 · 近景", lights_dim: "环境 · 灯光转暗" },
   effect: { rain: "雨声", thunder: "雷声", none: "安静" },
-  event: { none: "", thunder: "闪电演出", photo_reveal: "照片演出", last_train: "末班车演出" },
+  event: { none: "", thunder: "闪电演出", phone_call: "打电话演出", still: "静帧演出", ending: "结局" },
 };
 
 const S = {
@@ -61,6 +124,7 @@ const S = {
   activeSeq: 0,
   state: "idle",
   emotion: "neutral",
+  face: "",          // 画面上当前是哪个姿势（表情名或动作名），poseTo 的起点
   scene: "cafe_night",
   plateFront: "A",
   spriteFront: "A",
@@ -77,6 +141,7 @@ const S = {
   ttsFallback: false,
   mediaEventActive: false,
   card: null,
+  stage: null,        // 表演通道表（卡包 chips… 见 chanPick）
   gapTimer: 0,
   holdTimer: 0,
   holdPending: false,
@@ -94,24 +159,138 @@ const S = {
 function applyCard(card) {
   if (!card || !card.assets) return;
   const a = card.assets;
+  /* v17：素材前缀 / 清单地址都从快照来（服务端按卡挂载，前端不拼目录）。
+     顺序必须是「先按基址重算整棵，再让快照点名的组覆盖」——反过来会把服务端给的
+     绝对 URL 冲掉。快照里的 URL 已经能用，这里只补一个缓存版本号。 */
+  if (card.assets_base) setAssetBase(card.assets_base);
+  if (card.assets_manifest) ASSET_MANIFEST = card.assets_manifest;
+  const wv = (v) => (typeof v === "string" && v.startsWith("/") && !v.includes("?")
+    ? `${v}?v=${ASSET_V}` : v);
+  const wm = (m) => {
+    if (!m || typeof m !== "object") return m;
+    const out = {};
+    Object.keys(m).forEach((k) => { out[k] = wv(m[k]); });
+    return out;
+  };
   // 只有一套素材，卡包快照就是它；清单加载会再覆盖一次（含序列帧），互为兜底。
-  if (a.char) ASSETS.char = a.char;
-  if (a.pose) ASSETS.pose = a.pose;
-  if (a.plate) ASSETS.plate = a.plate;
-  if (a.insert) ASSETS.insert = a.insert;
-  if (a.still) ASSETS.still = a.still;
+  if (a.char) ASSETS.char = wm(a.char);
+  if (a.pose) ASSETS.pose = wm(a.pose);
+  if (a.plate) ASSETS.plate = wm(a.plate);
+  if (a.insert) ASSETS.insert = wm(a.insert);
+  if (a.still) ASSETS.still = wm(a.still);
+  if (a.ending) ASSETS.ending = wm(a.ending);
   if (card.labels) {
     ["emotion", "action", "scene", "effect", "event"].forEach((k) => {
       if (card.labels[k]) LABEL[k] = { ...LABEL[k], ...card.labels[k] };
     });
   }
   S.card = card;
+  if (card.stage) S.stage = card.stage;   // 表演通道表（动作互斥规则），见 chanPick()
   if (card.title) document.title = `Mira · ${card.title}`;
   if (card.character && card.character.name) {
     const n = document.querySelector(".who .name");
     if (n) n.textContent = card.character.name;
   }
   if ((card.warnings || []).length) console.warn("[card] 卡包告警：", card.warnings);
+}
+
+/* ------------------------------------------------------------ 表演通道仲裁
+ * 规则来自卡包：GET /api/card 的 stage 字段 ← cards/mira_cafe/card.yaml 的
+ * channels / face_map / actions 三段。程序只做一件事：**判断此刻能不能做**。
+ *   5 个通道：speech 口部/发声 · face 神态 · body 身体姿态 · hand 手部动作 · gaze 头部眼神
+ *   同一通道同一时间只能有一个动作，不同通道可以叠加。
+ *   **口部优先**：说话期间"要占嘴"的动作一律让路（按卡包 degrade_to 降级；
+ *   降不了就不播——宁可不做，也不要一边说一边喝）。
+ * 与 app/channels.py 是同一套算法，两边由 tools/qa/check_channels.py 对拍。
+ */
+const CHAN = { claims: Object.create(null) };
+
+function stageSpec(action) {
+  const st = S.stage;
+  return (st && st.actions && st.actions[action]) || null;
+}
+
+/* 口部是不是被「说话」占着。看四件事：状态机 / 正在播的 mp3 / 已排期还没播完的 PCM /
+   **本轮台词还没说完**（正在生成和思考时演一个占嘴动作，一定会撞上马上要说的话）。 */
+function speechBusy() {
+  const ctx = AMP.ctx;
+  if (S.playing && !S.playing.paused && !S.playing.ended) return true;   // 整句 mp3 在播
+  if (ctx && ctx.currentTime < STREAM.endTime - 0.05) return true;       // 流式 PCM 已排期未播完
+  if (STREAM.items.length) return true;                                  // 还有句子没排到时间线
+  if (S.state === "speaking") return true;                               // 状态机兜底
+  /* 本轮台词还没播完（正在生成/思考）：现在演一个"要占嘴"的动作，一定会撞上马上
+     要说的话 —— 按「说话通道优先」先挡住。 */
+  if (!S.audioDone && (S.state === "thinking" || PERF.active)) return true;
+  return false;
+}
+
+function chanBusy() {
+  const now = Date.now();
+  const busy = Object.create(null);
+  for (const k in CHAN.claims) {
+    const c = CHAN.claims[k];
+    if (c && c.until > now) busy[k] = c.action;
+    else delete CHAN.claims[k];
+  }
+  if (speechBusy()) busy.speech = "说话";
+  return busy;
+}
+
+function chanConflicts(action, busy) {
+  const spec = stageSpec(action);
+  if (!spec) return [];
+  const out = [];
+  if (spec.speaks && busy.speech) out.push(`口部：${action} 要用到嘴，正在说话 → 说话优先`);
+  /* 站姿是可自愈的：谁占着 body、而那个动作声明了 posture=standing，就按站姿判定 */
+  const bodySpec = busy.body ? stageSpec(busy.body) : null;
+  if (bodySpec && bodySpec.posture === "standing" && spec.seated !== false)
+    out.push(`身体姿态：已经起身，坐着的 ${action} 不能再播`);
+  for (const ch of spec.channels || []) {
+    if (ch === "speech") continue;
+    const occ = busy[ch];
+    if (occ && occ !== action) {
+      const label = ((S.stage.channels || {})[ch] || {}).label || ch;
+      out.push(`通道${label}：被 ${occ} 占着`);
+    }
+  }
+  return out;
+}
+
+function chanPick(action) {
+  if (!action || action === "idle") return { action, reasons: [] };
+  const spec = stageSpec(action);
+  const st = S.stage;
+  if (!spec || !st) return { action, reasons: [] };  // 旧协议 / 没拿到卡包快照：不接管
+  const busy = chanBusy();
+  const reasons = chanConflicts(action, busy);
+  if (!reasons.length) return { action, reasons: [] };
+  /* 抢断：优先级高的动作可以顶掉正在播的手势；**口部不可抢**（要 speech_priority 以上） */
+  const sp = st.speech_priority || 100;
+  const pri = spec.priority || 0;
+  let can = true;
+  for (const ch in busy) {
+    if (ch === "speech") { if (pri < sp) can = false; continue; }
+    const other = stageSpec(busy[ch]);
+    if (pri <= ((other && other.priority) || 0)) can = false;
+  }
+  if (can && !(spec.speaks && busy.speech))
+    return { action, reasons: ["抢断：" + reasons.join("；")] };
+  let cur = action;
+  for (let hop = 0; hop < 3; hop++) {
+    const nxt = (stageSpec(cur) || {}).degrade_to;
+    if (!nxt) break;
+    if (!chanConflicts(nxt, busy).length)
+      return { action: nxt, reasons: reasons.concat(["降级：" + cur + " → " + nxt]) };
+    cur = nxt;
+  }
+  return { action: null, reasons: reasons.concat(["没有可用降级 → 不播"]) };
+}
+
+function chanClaim(action, holdMs) {
+  const spec = stageSpec(action);
+  if (!spec) return;
+  const until = Date.now() + Math.max(400, holdMs);
+  for (const ch of spec.channels || []) CHAN.claims[ch] = { action, until };
 }
 
 /* 句间停顿：TTS 是按句合成的，句与句之间要有长短不一的呼吸，
@@ -125,9 +304,11 @@ function gapAfter(text) {
   return g.default || 190;
 }
 
-/* ------------------------------------------------------- 环境音（程序合成，无素材）
-   雨后的房间不该是「静音的 TTS 真空」：一层很低的棕噪声当屋檐滴水 + 远处车流的底噪，
-   让语音听起来是「在这个空间里」说的。音量压得很低，不盖台词。 */
+/* ------------------------------------------------------- 音频上下文（只建 ctx，不放任何底噪）
+   2026-10-21（用户看完 v15 成片，第 2 条）：「去掉雨声的底噪，这个不要了」。
+   这里原来用棕噪声合成一层"屋檐滴水 + 远处车流"的底噪，还带 ducking 和面板开关 ——
+   全部删掉。现在这个 ctx 只服务两处的**事件音**（雷声低频、电话时的极短压低），
+   不再有常驻循环音源，所以没有台词的时候就是真安静。 */
 const AMB = { ctx: null, gain: null, on: false };
 
 function ambienceInit() {
@@ -137,60 +318,19 @@ function ambienceInit() {
     if (!AC) return;
     const ctx = new AC();
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    const len = Math.floor(ctx.sampleRate * 4);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < len; i++) {
-      const white = Math.random() * 2 - 1;
-      last = (last + 0.02 * white) / 1.02;
-      data[i] = last * 3.2;
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    const hp = ctx.createBiquadFilter();
-    hp.type = "highpass";
-    hp.frequency.value = 140;
-    const lp = ctx.createBiquadFilter();
-    lp.type = "lowpass";
-    lp.frequency.value = 1100;
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    src.connect(hp);
-    hp.connect(lp);
-    lp.connect(gain);
-    gain.connect(ctx.destination);
-    src.start();
     AMB.ctx = ctx;
-    AMB.gain = gain;
-    AMB.on = true;
-    gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 3.0);
   } catch (e) {
     /* 没有 Web Audio 就安静，不影响主流程 */
   }
 }
 
+/* 常驻底噪已下线：保留空实现，调用点（duck 之类）不用改也不会有声音。 */
 function ambienceSet(on) {
-  if (!AMB.ctx) {
-    if (on) ambienceInit();
-    return;
-  }
-  if (AMB.ctx.state === "suspended") AMB.ctx.resume().catch(() => {});
-  AMB.on = on;
-  const t = AMB.ctx.currentTime;
-  AMB.gain.gain.cancelScheduledValues(t);
-  AMB.gain.gain.linearRampToValueAtTime(on ? (AMB.ducked ? 0.026 : 0.05) : 0.0, t + 1.1);
+  if (on) ambienceInit();
 }
 
-/* 她说话时把房间底噪压一点（像真人说话时你会不自觉忽略环境音）。
-   幅度很小，只在听感上让台词更"近"。 */
 function ambDuck(on) {
-  AMB.ducked = !!on;
-  if (!AMB.ctx || !AMB.on) return;
-  const t = AMB.ctx.currentTime;
-  AMB.gain.gain.cancelScheduledValues(t);
-  AMB.gain.gain.linearRampToValueAtTime(on ? 0.026 : 0.05, t + 0.5);
+  if (!AMB.ctx) return;
 }
 
 /* ------------------------------------------------------------------ 工具 */
@@ -231,7 +371,59 @@ function clearNarration() {
   if (bar) bar.classList.remove("on");
 }
 
+/* --------------------------------------------------------- 「你说」回显（主画面）
+   把用户这句话留在画面上（为什么需要，见 index.html / style.css 里的长注释）。
+   三条输入通路——#sendBtn 打字、麦克风 STT、#suggest 建议条——最后都进 sendTurn()，
+   所以只在 sendTurn() 里上屏一处就够了。**建议条那条是重点**：以前点完只换了建议条、
+   她立刻开口，画面没有任何"我选了这句话"的痕迹，观众看到的就是她在自说自话。
+
+   停留规则（按真人对话的读法定的）：
+     - 发送瞬间就亮，一直挂到她这一轮说完、回到待机之后 ~1.4s 才淡出 ——
+       两条同屏才看得出"她在接我哪一句"。
+     - 最短 3.2s：她秒回（mock/短句）也不能一闪而过，观众还没读完。
+     - 最长 24s：她不回（网络失败、被连续打断）时也不能永久挂着一句旧话。
+     - 新的一句直接替换旧的：同屏永远只有一条「你说」，不会叠两条。 */
+const YOU_SAID = { on: false, shownAt: 0, readyAt: 0, maxT: 0, fadeT: 0 };
+
+function showYouSaid(text) {
+  const box = $("youSaid"), t = $("youSaidText");
+  if (!box || !t) return;
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (!s) {                       // 开场轮（kind=open）没有说话内容，不挂空行
+    hideYouSaid();
+    return;
+  }
+  t.textContent = s;
+  box.classList.add("on");
+  YOU_SAID.on = true;
+  YOU_SAID.shownAt = performance.now();
+  YOU_SAID.readyAt = YOU_SAID.shownAt + 3200;
+  clearTimeout(YOU_SAID.maxT);
+  clearTimeout(YOU_SAID.fadeT);
+  YOU_SAID.maxT = setTimeout(hideYouSaid, 24000);
+}
+
+/* 她这一轮说完了（状态回到待机）→ 再给 1.4s 让她的话落一下，然后收掉。
+   若她回得很快、还没到 3.2s，就等到 3.2s 再收（见上面的最短停留）。 */
+function settleYouSaid() {
+  if (!YOU_SAID.on) return;
+  const left = YOU_SAID.readyAt - performance.now();
+  clearTimeout(YOU_SAID.fadeT);
+  YOU_SAID.fadeT = setTimeout(hideYouSaid, Math.max(1400, left));
+}
+
+function hideYouSaid() {
+  YOU_SAID.on = false;
+  clearTimeout(YOU_SAID.maxT);
+  clearTimeout(YOU_SAID.fadeT);
+  const box = $("youSaid");
+  if (box) box.classList.remove("on");
+}
+
 function setState(name) {
+  /* 回到待机 = 这一轮说完了 → 「你说」行开始收起（见 settleYouSaid 里的停留规则） */
+  if (name === "idle") settleYouSaid();
+
   S.state = name;
   $("app").dataset.state = name;
   $("stateLabel").textContent =
@@ -248,17 +440,19 @@ function setState(name) {
      必须是即时反应的：用户一按话筒，她的脸就该立刻转向你。 */
   if (S.suppressSprite) {
     /* 打断时先保状态标签、别抢脸（见 interrupt()） */
-  } else if (name === "listening") showSprite(ASSETS.char.listen, SPRITE_MS);
+  } else if (name === "listening") { if (!SEQ.on) poseTo("listen", { prio: PRIO.emo }); }
   else if (PERF.active) {
     /* beat 负责 thinking/speaking/idle 的表情，这里不抢 */
-  } else if (name === "thinking") showSprite(ASSETS.char.thinking, SPRITE_MS);
+  } else if (name === "thinking") { if (!SEQ.on) poseTo("thinking", { prio: PRIO.base }); }
   else if (name === "speaking" || name === "idle") {
-    // 动作贴片（sip_coffee / show_photo …）还在时效内就别抢它的画面
+    // 动作贴片（sip_coffee / phone_call …）还在时效内就别抢它的画面
     // 2026-10-20 反馈 12：**呼吸循环在跑的时候也不许抢**。实测（sprite_trace）待机
     // 8 秒里插进来一次 neutral.webp(150ms)，把 340ms 的呼吸叠化硬切断，接着下一次
     // breathTick 又从半途重新淡入 —— 合成上就是每 ~5 秒一次的"闪一下"。
-    if (!BREATH.on && Date.now() >= (S.poseUntil || 0))
-      showSprite(ASSETS.char[S.emotion] || ASSETS.char.neutral, SPRITE_MS);
+    if (!BREATH.on && Date.now() >= (S.poseUntil || 0)) {
+      if (!SEQ.on && poseTo(S.emotion, { prio: PRIO.base })) { /* 走帧路径 */ }
+      else paint(ASSETS.char[S.emotion] || ASSETS.char.neutral, PRIO.base);
+    }
   }
   if (name === "idle") scheduleNudge();
   /* 呼吸循环只在 idle 且是中性脸时跑（见 breathStart）；离开 idle 立刻收，
@@ -284,15 +478,11 @@ function preload() {
       const img = new Image();
       img.src = src;
     });
-    // 序列帧也预取：第一帧没加载完就开播，会闪一下白。
-    // 呼吸帧现在走 A/B 主通道（不是覆盖层），第一轮没缓存就会"换图等 onload"，
+    // v17（2026-10-22）：动作序列帧 + 表情过渡帧整套已下架（char/_parked/v17，见
+    // manifest._v17_parked）。清单里不再有 seq / transitions 键，序列帧预取一并删掉 ——
+    // 否则每次进页面会白拉 188 张已经不播的图，还白占内存。
+    // 呼吸帧仍要预取：它现在走 A/B 主通道（不是覆盖层），第一轮没缓存就会"换图等 onload"，
     // 于是每张都晚 10–40ms 落地 —— 6 张叠起来就是一串不均匀的节拍，必须一起预取。
-    Object.values(ASSETS.seq).forEach((arr) =>
-      (arr || []).forEach((src) => {
-        const img = new Image();
-        img.src = src;
-      })
-    );
     (BREATH.mode === "frames" ? (BREATH.frames || []) : []).forEach((src) => {
       const img = new Image();
       img.src = src;
@@ -343,8 +533,79 @@ function showPlate(src) {
      - 80ms：5 帧，边缘只是轻微柔化，读成她换了姿势，不会读成两个人
    想要完全无重影就把这里改成 0（硬切）：代价是大幅动作（sip_coffee 头差 42px）
    看起来是跳而不是动。80ms 是这两者之间的取中。 */
-let SPRITE_MS = 80;
+/* 2026-10-21 用户第五次反馈（看完 v15 成片）：
+ *   「换姿势还是硬切；硬切解决不了就做淡入淡出；千万别一次硬切多张图，看起来像人物闪了一下」
+ * 之前把这里设成 0（硬切）+ 序列层播 4 帧（每帧 60~140ms 换一张 src）——那正是
+ * 用户看到的「闪」：一秒钟内换 4~5 张不同的画。现在做两处根本性改动：
+ *   ① 这里给一个**真叠化**：260ms 交叉淡入（两张不同的画各占一半只持续十几帧，
+ *      在有头对头注册的素材上读成"她换了个姿势"，不会被读成两个人）；
+ *   ② **删掉所有多帧硬切路径**（playSequence / playTransition / poseTo 的帧路径），
+ *      任何时刻最多只有一次换图在发生，换完至少停 360ms 才有下一次。
+ * 想 A/B 就加 `?fade=0`（硬切）或 `?fade=120`。 */
+let SPRITE_MS = 260;
+const SPRITE_MIN_DWELL = 360;
 const SWAP = { busyUntil: 0, timer: 0, pending: null, inflight: false };
+
+/* ------------------------------------------------------ 单一画师（2026-10-21）
+ * 用户第三次报「硬切换 / 重叠 / 闪烁」。这次没有再猜，而是用探针
+ * （tools/qa/flicker_turn.py）在真浏览器里跑 2 轮对话、逐帧采样 + 给 showSprite
+ * 装调用栈钩子，结论不是"某处叠化太长"，是**换图没有主人**：
+ *
+ *   19 秒里 showSprite 被调用 13 次，来自 6 个不同的源
+ *   （setState / applyEmotion / playTransition 尾帧与 400ms 兜底 /
+ *     applyAction 尾帧 / gaze 回位 / 看门狗），谁最后调谁赢；
+ *   相邻两次最小间隔 **51ms** —— smile 刚落地 51ms 就被 neutral 覆盖。
+ *   逐帧看：34 个"观众看到的图段"里 25 个短于 200ms，10 个短于 120ms。
+ *   同时 seq 层在 1141 帧里有 128 帧（11%）**两张不同的画同时不透明** —— 那就是重叠。
+ *
+ * 三条约束全部收在这一个函数里，调用点不要再各写一份：
+ *   ① 幂等：已经在放这张就直接返回（顺带丢掉过期的排队目标）
+ *   ② 持有期：高优先级持有期内，低优先级请求**直接丢**，不排队
+ *   ③ 最短驻留：任意两次换图间隔 ≥ SPRITE_MIN_DWELL，挡住连闪
+ * 优先级：4=序列帧 3=动作贴片 2=视线 1=表情 0=状态/兜底/回位
+ */
+const PRIO = { seq: 4, pose: 3, gaze: 2, emo: 1, base: 0 };
+const HOLD = { prio: -1, until: 0, url: "" };
+const SPRITE = { now: "", last: 0 };
+
+function spriteName(url) {
+  return String(url || "").split("/").pop();
+}
+
+/* 所有"她长什么样"的请求的唯一入口。返回 true = 真的排上了。 */
+function paint(url, prio, holdMs) {
+  if (!url) return false;
+  const p = prio == null ? PRIO.emo : prio;
+  const now = performance.now();
+  if (url === SPRITE.now) {
+    SWAP.pending = null;
+    clearTimeout(SWAP.timer);
+    /* 幂等分支也必须确认真有人**在画面上**。曾经出现过这种状态：SPRITE.now 记着
+       neutral.webp，但两层 A/B 的 is-front 都被撤掉了（叠化收尾时新层没接上），
+       于是整张角色层透明，而之后每一次 applyEmotion("neutral") 都命中这里直接
+       return —— 画面永远没有人。用户看到的就是「人物突然消失」。
+       检测到没人就破幂等，让它真的重画一次。 */
+    const a = $("charA"), b = $("charB");
+    const shown = (a && a.classList.contains("is-front")) ||
+                  (b && b.classList.contains("is-front"));
+    if (shown) return true;
+    SPRITE.now = "";
+    SPRITE.last = 0;
+  }
+  if (now < HOLD.until && p < HOLD.prio) {
+    console.info("[sprite] 让步", spriteName(url), "←", spriteName(HOLD.url));
+    return false;
+  }
+  HOLD.prio = p;
+  HOLD.until = now + Math.max(Number(holdMs) || 0, SPRITE_MIN_DWELL);
+  HOLD.url = url;
+  showSprite(url, SPRITE_MS);
+  /* 记下"画面上现在是哪个姿势"。poseTo 要靠它算下一次的起点——以前没有这个变量，
+     所以每次换姿势都只能假设"从 neutral 出发"，这正是硬切的第二个来源。 */
+  if (!SEQ.on) S.face = nameOfUrl(url) || S.face;
+  return true;
+}
+
 
 /* 不变量：任意时刻最多一层 is-front。keep 是刚落成的前景层。 */
 function sweepSprites(keep) {
@@ -373,22 +634,53 @@ function flushSwap() {
 function showSprite(src, dur) {
   if (!src) return;
   const now = performance.now();
+  /* ③ 最短驻留（最后一道闸）：即使上层的优先级算错了，也不允许 220ms 内换两次。
+     探针实测最小间隔 51ms —— 那就是用户嘴里的「闪一下」。 */
+  const wait = SPRITE.now ? SPRITE.last + SPRITE_MIN_DWELL - now : 0;
+  if (wait > 0) {
+    SWAP.pending = { src, ms: dur };
+    clearTimeout(SWAP.timer);
+    SWAP.timer = setTimeout(flushSwap, Math.ceil(wait));
+    return;
+  }
   if (SWAP.inflight || now < SWAP.busyUntil) {
-    SWAP.pending = { src, ms: dur || 220 };
+    SWAP.pending = { src, ms: dur == null ? SPRITE_MS : dur };
     clearTimeout(SWAP.timer);
     SWAP.timer = setTimeout(flushSwap, 40);
     return;
   }
-  const front = S.spriteFront === "A" ? $("charA") : $("charB");
-  const back = S.spriteFront === "A" ? $("charB") : $("charA");
-  if (!front || !back) return;
-  if (front.getAttribute("src") === src) {
+  /* 前后景层**按真实不透明度**判定，而不是按 S.spriteFront 这个记账变量。
+     2026-10-21 成片复核发现：38 次换图里偶发 1 次是"一帧换掉"（不是叠化）。
+     根因是记账和实际显示可能错开一格（上一轮叠化收尾的 sweep、或某次让位被丢掉）：
+     一旦 front/back 说反，代码会把**正在显示的那层**瞬间 opacity 设 0 —— 观众看到
+     人物闪一下。这里改成读计算样式，谁不透明谁是前景，记账变量只用来兜底。 */
+  const elA = $("charA");
+  const elB = $("charB");
+  if (!elA || !elB) return;
+  const opA = parseFloat(getComputedStyle(elA).opacity || "0") || 0;
+  const opB = parseFloat(getComputedStyle(elB).opacity || "0") || 0;
+  /* 先认 is-front（那是"这一层是当前画面"的正式标记），只有标记缺失/冲突时才退回
+     比不透明度。为什么不直接比不透明度：一次叠化进行到一半时两层都是 0.5，比大小
+     会选错，把**正在淡入**的那层当成前景再淡出一次 —— 观众看到的就是一帧换掉。 */
+  const aFront = elA.classList.contains("is-front");
+  const bFront = elB.classList.contains("is-front");
+  let front;
+  if (aFront && !bFront) front = elA;
+  else if (bFront && !aFront) front = elB;
+  else front = opA >= opB ? elA : elB;
+  const back = front === elA ? elB : elA;
+  S.spriteFront = front === elA ? "A" : "B";
+  if (front.getAttribute("src") === src || SPRITE.now === src) {
     // 目标就是当前这张：把排队中的旧目标丢掉，别让过期的换图在 200ms 后才落地
     SWAP.pending = null;
     clearTimeout(SWAP.timer);
     return;
   }
-  const ms = Math.max(40, dur || SPRITE_MS);
+  /* 换姿势永远是叠化（用户第 3 条：「不要硬切，就做淡入淡出」）。
+     调用方传 0 或很小的值时不再当成硬切，抬到 SPRITE_MS —— 真正的硬切只留给
+     下面 BREATH 的帧流（现在默认不跑），以及首帧（那时还没有前景层）。 */
+  const asked = dur == null ? SPRITE_MS : Number(dur) || 0;
+  const ms = Math.max(SPRITE_MS, asked);
   SWAP.inflight = true;
   back.style.transition = "none";
   back.style.opacity = "0";
@@ -396,7 +688,11 @@ function showSprite(src, dur) {
   back.style.transitionDuration = `${ms}ms`;
   front.style.transitionDuration = `${ms}ms`;
   const old = front;
+  let started = false;          // start 可能被 onload / 超时兜底调用两次，只认第一次
   const start = () => {
+    if (started) return;
+    started = true;
+    back.onload = null;
     SWAP.inflight = false;
     void back.offsetWidth;                    // 强制回流，保证 0 → 1 真的能跑过渡
     /* 2026-10-20 修：这里原来是 `back.style.transition = ""`。
@@ -413,20 +709,51 @@ function showSprite(src, dur) {
     old.style.zIndex = "1";
     back.classList.add("is-front");
     S.spriteFront = S.spriteFront === "A" ? "B" : "A";
-    SWAP.busyUntil = performance.now() + ms;
-    setTimeout(() => {
-      /* 撤场（见铁律 4）**但不能把当前前景层撤掉**。
-         踩过的坑：上一次叠化的撤场定时器排在 ms+60，而下一次叠化在 ms 就可以开始。
-         于是可能出现「新层还在 onload（opacity 0）、旧层的撤场定时器刚好到点」——
-         两层都没有 is-front，角色整个人从画面上消失，walk 截图里 listening / 换表情
-         那几张就是空的。这里改成永远以"当前前景层"为准做一次清扫。 */
+    SPRITE.now = src;
+    SPRITE.last = performance.now();
+    SWAP.busyUntil = SPRITE.last + ms;
+    /* 诊断钩子（零成本：没人装就一行判断）。为什么需要：
+       换图有 14 个调用点，用户在页面上看到「闪一下」时无从知道是谁改的脸。
+       探针（tools/qa/flicker_turn.py / record_demo_v16.py）装上它就能拿到**调用栈**，
+       把每次换图归因到具体函数，而不是靠猜。
+       2026-10-21：原来这个钩子挂在函数入口，**排队/让位的那次也会记一笔** ——
+       于是「两次换图间隔 47ms」这种告警其实是一次真换 + 一次被延后的重排。
+       现在只在真的开始叠化时记，量出来的间隔才是观众看到的间隔。 */
+    if (window.__miraSwapHook) {
+      try { window.__miraSwapHook(src, ms, (new Error()).stack || ""); } catch (e) { /* 探针自己的错不传染 */ }
+    }
+    const settle = () => {
       sweepSprites(spriteFrontEl());
       flushSwap();
-    }, ms + 60);
+    };
+    /* 硬切（ms = 0）必须**同步**撤旧层。改成"等一个定时器再撤"的话，从新层不透明
+       到旧层撤掉之间会有一帧以上两张不同的画同时 opacity 1 —— 那正是探针量到的
+       「重叠」（two drawings visible at once）。只有真的在做叠化时才该等新层到 1。 */
+    if (ms > 0) setTimeout(settle, ms + 60);
+    else settle();
   };
-  if (back.getAttribute("src") === src && back.complete) { start(); return; }
+  const fail = () => {
+    back.onload = null;
+    SWAP.inflight = false;
+    SWAP.busyUntil = 0;
+    flushSwap();
+  };
+  if (back.getAttribute("src") === src) {
+    /* src 相同不能直接再赋一次后等 onload：浏览器认为"这张已经在加载/加载完了"，
+       不会重新触发 load 事件，onload 永远不来。而上面已经把这层的 is-front 撤掉、
+       opacity 设成 0 —— 于是 A/B 两层同时透明，整张角色层是空的，人物从画面上消失
+       且再也不会自己回来（幂等分支还会因为 SPRITE.now 没变而直接返回）。
+       已经加载好的直接 start；还在路上的，除了挂 onload 再按 complete 兜一次。 */
+    if (back.complete && back.naturalWidth > 0) { start(); return; }
+    back.onload = start;
+    back.onerror = fail;
+    setTimeout(() => {
+      if (SWAP.inflight && !started && back.complete && back.naturalWidth > 0) start();
+    }, 140);
+    return;
+  }
   back.onload = start;
-  back.onerror = () => { SWAP.inflight = false; SWAP.busyUntil = 0; flushSwap(); };
+  back.onerror = fail;
   back.src = src;
 }
 
@@ -455,7 +782,14 @@ const TRANS = {};            // "neutral->smile" → { frames:[url0,url1], ms:[7
    于是序列层 82% 的时间都在「两张半透明之间」；五张各画一次的中间帧连起来就是闪。
    现在改成 ①每帧至少停 SEQ_MIN_MS ②淡入 ≤ 帧长的 35%（见 frameFade）。
    视觉上从「闪」变成 7fps 的手绘动画：每帧有 65% 的时间是清晰的一张图。 */
-let XFADE = 55;              // 帧间淡入上限（manifest playback.crossfadeMs 只作参考）
+/* 帧间交叉淡入。**2026-10-21 改成 0（硬切）**，理由是被量出来的：
+   这些帧不是同一张画的 denoise 变体，而是**四个不同姿势**（stand_00..03 头/肩位置
+   逐帧在动）。两张不同的画各给 50% 不透明度 = 双影，探针（flicker_turn.py）在 19s 里
+   量到 128 帧（11%）两帧同时不透明，用户报的「重叠」就是它。
+   硬切之后每帧 100% 时间都是清晰的一张图，读成 7fps 的定格动画；而"闪"来自
+   **帧太短 + 没有停顿**，不是来自硬切——所以真正的解是帧长（SEQ_MIN_MS）与
+   帧序设计，不是把两张画糊在一起。manifest 里 playback.crossfadeMs 不再覆盖它。 */
+let XFADE = 0;               // 帧间交叉淡入（0 = 硬切）
 const SEQ_MIN_MS = 140;      // 单帧最短停留
 
 function frameFade(ms) {
@@ -541,6 +875,14 @@ function breathStart() {
   return true;
 }
 
+/* 序列层是带 alpha 的贴片，不是满幅不透明图（CSS 里那条注释写错了）。
+   它盖在 A/B 上时，底层那张旧姿势会从新帧透明的地方透出来——抬手时旧手臂还在原位，
+   合成上就是两条手臂。所以播帧期间把 A/B 藏起来，收尾时同一帧里一起切换。 */
+function seqBaseShow(on) {
+  const s = $("stage");
+  if (s) s.classList.toggle("seqmode", !!on);
+}
+
 function seqStop() {
   clearTimeout(SEQ.timer);
   clearTimeout(SEQ.endT);
@@ -553,6 +895,7 @@ function seqStop() {
   SEQ.idx = 0;
   const box = $("charC");
   if (box) box.classList.remove("on");
+  seqBaseShow(false);
   ["charC1", "charC2"].forEach((id) => {
     const e = $(id);
     if (e) {
@@ -568,8 +911,12 @@ function seqPaint(url, xfade) {
   const a = $("charC1");
   const b = $("charC2");
   if (!a || !b) return;
+  if (window.__miraSwapHook) {
+    try { window.__miraSwapHook(url, -1, (new Error()).stack || ""); } catch (e) { /* 同上 */ }
+  }
   const cur = SEQ.side === 0 ? a : b;
   const nxt = SEQ.side === 0 ? b : a;
+  SEQ.cur = url;      // 被打断时新路径从这里接（否则会用上一次的静态贴片，视觉上跳一下）
   const ms = xfade == null ? XFADE : xfade;
   nxt.style.transitionDuration = ms + "ms";
   const flip = () => {
@@ -579,11 +926,13 @@ function seqPaint(url, xfade) {
     cur.style.zIndex = "1";
     nxt.classList.add("show");
     SEQ.side = SEQ.side === 0 ? 1 : 0;
-    /* 新帧到 1 之后再撤旧帧（同 showSprite）：先把旧帧撤掉会让底下那层按 DOM 顺序顶上来。 */
+    /* 新帧到 1 之后再撤旧帧（同 showSprite）：先把旧帧撤掉会让底下那层按 DOM 顺序顶上来。
+       2026-10-21：硬切（ms=0）时必须**同步**撤，原来固定 `ms + 90` 会让两张不同姿势
+       各 100% 不透明地同时挂 90ms —— 虽然上面那张盖住了下面那张，但探针照样量到
+       "两帧同时可见"，而且任何一次渲染误差都会露出来。 */
     clearTimeout(SEQ.hideT);
-    SEQ.hideT = setTimeout(() => {
-      cur.classList.remove("show");
-    }, ms + 90);
+    if (ms > 0) SEQ.hideT = setTimeout(() => { cur.classList.remove("show"); }, ms + 90);
+    else cur.classList.remove("show");
   };
   if (nxt.getAttribute("src") === url && nxt.complete) return flip();
   nxt.onload = flip;
@@ -600,8 +949,13 @@ function playFrames(urls, ms, onDone, opts) {
   SEQ.on = true;
   SEQ.frames = urls;
   // 每帧都抬到 SEQ_MIN_MS 以上：清单里 110ms 那种节奏播出来是闪，不是动作。
-  SEQ.ms = (ms || []).map((v) => Math.max(SEQ_MIN_MS, Number(v) || SEQ_MIN_MS));
+  /* 原本一律抬到 SEQ_MIN_MS=140（动作序列 110ms 一帧会被"闪"）。但换姿势的补间路径
+     一帧 90ms、整段 3~4 帧，抬到 140 会把一次换姿势拖成 0.6s 以上 —— 所以允许调用方
+     指定下限：动作序列仍用 140，补间路径用 60。 */
+  const minMs = (opts && opts.minMs) || SEQ_MIN_MS;
+  SEQ.ms = (ms || []).map((v) => Math.max(minMs, Number(v) || minMs));
   SEQ.idx = 0;
+  seqBaseShow(true);
   box.classList.add("on");
   seqPaint(urls[0], 0);
   const advance = (i) => {
@@ -613,15 +967,20 @@ function playFrames(urls, ms, onDone, opts) {
       if (i + 1 < urls.length) advance(i + 1);
       else SEQ.endT = setTimeout(() => {
         if (!SEQ.on) return;
-        const done = onDone || ((emotion) => showSprite(ASSETS.char[emotion] || ASSETS.char.neutral, SPRITE_MS));
+        const done = onDone || ((emotion) => paint(ASSETS.char[emotion] || ASSETS.char.neutral, PRIO.base));
         done(S.emotion);
-        box.classList.remove("on");
         SEQ.on = false;
         SEQ.playing = "";
         SEQ.idx = 0;
-        ["charC1", "charC2"].forEach((id) => {
-          const e = $(id);
-          if (e) e.classList.remove("show");
+        /* 收尾必须**同一帧**切：静态层已经画好目标贴片，序列层最后一帧也是同一张图。
+           先撤序列层再画静态层会露出底板（人物闪空一帧），反过来会看到旧姿势。 */
+        requestAnimationFrame(() => {
+          box.classList.remove("on");
+          seqBaseShow(false);
+          ["charC1", "charC2"].forEach((id) => {
+            const e = $(id);
+            if (e) e.classList.remove("show");
+          });
         });
       }, SEQ.ms[i] || 110);
     }, (i === 0 ? 0 : SEQ.ms[i - 1]) || 110);
@@ -631,54 +990,158 @@ function playFrames(urls, ms, onDone, opts) {
 }
 
 function playSequence(action, opts) {
-  const meta = SEQ_META[action];
-  const urls = ((meta && meta.frames) || ASSETS.seq[action] || []).filter(Boolean);
-  if (urls.length < 2) return false;
-  const fps = Math.max(6, Math.min(24, (opts && opts.fps) || 11));
-  const step = Math.round(1000 / fps);
-  let ms = (meta && meta.ms && meta.ms.length === urls.length) ? meta.ms.slice() : urls.map(() => step);
-  if (opts && opts.holdMs) ms[ms.length - 1] = Math.max(opts.holdMs, ms[ms.length - 1] || 0);
-  SEQ.playing = action;
-  return playFrames(urls, ms, null, opts);
+  /* 2026-10-21（用户第五次反馈）彻底下线：这就是「一秒内硬切 4~5 张图」的元凶。
+     动作序列帧是 110ms 一帧、fps≈9，播放时序列层每帧换一次 src —— 观众看到的是
+     人物在闪，不是手臂在抬。换成"一次 260ms 的交叉淡入直接到动作定稿贴片"。
+     函数保留（调用点不改），但永远返回 false = 没有可播的序列路径。 */
+  return false;
 }
 
-/* 表情过渡：director 从思考切到笑，中间插两帧 70ms 的过渡帧，比 380ms 叠化更像「表情动了一下」。
-   只对 manifest 里给了 from->to 的组合生效，其余照旧走 showSprite 交叉淡化。 */
+/* 表情过渡（2 帧 70ms）同上：也是多帧硬切，一并下线。 */
 function playTransition(key, targetEmotion, opts) {
-  const t = TRANS[key];
-  if (!t || !t.frames || t.frames.length < 1) return false;
-  const ms = (t.ms && t.ms.length === t.frames.length) ? t.ms.slice() : t.frames.map(() => 70);
-  ms[ms.length - 1] = 60;   // 末帧只停一拍，随即交给静态表情层，避免「过渡帧多挂一拍」的僵硬感
-  /* 兜底：过渡帧要是加载失败（换素材时出现过 404），playFrames 的 onDone 永远不会来，
-     表情就被吞掉了 —— 用户看到的是「表情没变」，比硬切换更糟。400ms 没落地就直接换脸。 */
-  const fallback = setTimeout(() => {
-    if (S.emotion === targetEmotion && (!SEQ.on || SEQ.playing !== key)) return;
-    showSprite(ASSETS.char[targetEmotion] || ASSETS.char.neutral, SPRITE_MS);
-  }, 400);
-  const ok = playFrames(t.frames, ms, () => {
-    clearTimeout(fallback);
-    showSprite(ASSETS.char[targetEmotion] || ASSETS.char.neutral, SPRITE_MS);
-  }, Object.assign({ hardCut: false }, opts || {}));
-  if (!ok) clearTimeout(fallback);
-  return ok;
+  return false;
 }
 
-/* 素材清单：static/assets/char/manifest.json。容忍几种写法
-   （actions{} / sequences[] / 直接「动作名 → 帧数组」），
-   这样美术那边换命名不用改前端。没有 manifest 就一切走旧路径。 */
-const SEQ_BASE = "/static/assets/char/";
+/* ------------------------------------------------ 换姿势：只走「帧」，不走叠化
+ *
+ * 用户 2026-10-21 第四次反馈：立绘还是在硬切换、没有动画帧。
+ * 前三次的修法都停在「叠化多长」上（380 → 80 → 0），但那是在**两张不同的画之间**
+ * 调透明度：调长了是重影，调到 0 就是硬切。真正的缺口是**换姿势根本没有中间帧**：
+ *   · 表情只在 neutral→X 时有两帧过渡，其余组合直接硬切；
+ *   · 动作贴片每次都从 neutral 起播自己的 4 帧序列，演完又一下跳回表情贴片。
+ *
+ * 现在把"换姿势"统一成一条**帧路径**，交给序列层（#charC）播：
+ *   表情↔表情  清单里的补间矩阵 trans_<a>_<b>_<i>.webp（tools/gen/morph_matrix.py，
+ *              sdf 生成：剪影由两端 SDF 插值、脸区锁单一来源，中间帧是实心的单张画，
+ *              不是两张半透明加起来 —— 实测 soft_alpha ≤0.01，光流/叠化是 0.14~0.27）
+ *   动作↔表情  先把它自己的 4 帧动作序列**倒放**（手臂放回、身子坐正），再补到目标表情
+ *   表情→动作  先补到 neutral，再正放目标动作的序列（手臂抬起来）
+ * 路径上每一帧都是画出来的（补间帧 or 序列帧），端点永远是原贴片。
+ * 没有可用路径的对（素材缺帧）仍然硬切 —— 有路径才播，缺席不装。
+ */
+function poseUrl(name) {
+  return (ASSETS.char && ASSETS.char[name]) || (ASSETS.pose && ASSETS.pose[name]) || "";
+}
+
+function nameOfUrl(url) {
+  if (!url) return "";
+  for (const m of [ASSETS.char, ASSETS.pose]) {
+    for (const k in m || {}) if (m[k] === url) return k;
+  }
+  return "";
+}
+
+/* 动作序列的帧表与每帧时长（<action>_00…<action>_03 + <action>，末帧 900ms 是"停住"）。
+   这里用它两次：正放 = 手臂抬起来；倒放 = 手臂放回去。 */
+function seqOf(name) {
+  const meta = SEQ_META[name];
+  const urls = ((meta && meta.frames) || ASSETS.seq[name] || []).filter(Boolean);
+  if (urls.length < 2) return null;
+  const metaMs = (meta && meta.ms && meta.ms.length === urls.length) ? meta.ms : null;
+  return { urls, ms: metaMs || urls.map(() => 110) };
+}
+
+/* 每帧停留：序列帧本来 110ms，补间帧 90ms。夹在 60~140 之间 ——
+   低于 60 是闪，高于 140 一次换姿势就拖成 1 秒。 */
+function stepMs(v) {
+  const n = Number(v) || 90;
+  return Math.max(60, Math.min(140, Math.round(n)));
+}
+
+/* 回到 neutral 的一段帧（动作倒放 / 表情补间）。返回 null = 没有这条路。 */
+function legToNeutral(from) {
+  if (!from || from === "neutral") return { urls: [], ms: [] };
+  const t = TRANS[from + "->neutral"];
+  if (t && t.frames && t.frames.length) {
+    return { urls: t.frames.slice(), ms: t.frames.map((_, i) => stepMs(t.ms && t.ms[i])) };
+  }
+  const s = seqOf(from);
+  if (s) {
+    // 倒放：从"动作定稿"那一张回到第 0 帧（≈neutral）。第一帧是当前画面，去掉。
+    const urls = s.urls.slice(0, -1).reverse();
+    const ms = urls.map((_, i) => stepMs(s.ms[s.urls.length - 2 - i]));
+    return { urls, ms };
+  }
+  return null;
+}
+
+/* 从 neutral 走到目标的一段帧。 */
+function legFromNeutral(to) {
+  if (!to || to === "neutral") return { urls: [], ms: [] };
+  const s = seqOf(to);
+  if (s) {   // 动作：正放整条序列，末帧就是定稿贴片
+    return { urls: s.urls.slice(), ms: s.urls.map((_, i) => stepMs(s.ms[i])) };
+  }
+  const t = TRANS["neutral->" + to];
+  if (t && t.frames && t.frames.length) {
+    return { urls: t.frames.slice(), ms: t.frames.map((_, i) => stepMs(t.ms && t.ms[i])) };
+  }
+  return null;
+}
+
+/* from → to 的整条帧路径（不含两端的原贴片）。null = 素材里没有可播的中间帧。 */
+function posePath(from, to) {
+  if (!from || !to || from === to) return { urls: [], ms: [] };
+  const direct = TRANS[from + "->" + to];
+  if (direct && direct.frames && direct.frames.length) {
+    return { urls: direct.frames.slice(),
+             ms: direct.frames.map((_, i) => stepMs(direct.ms && direct.ms[i])) };
+  }
+  if (from === "neutral") return legFromNeutral(to);
+  if (to === "neutral") return legToNeutral(from);
+  const a = legToNeutral(from);
+  const b = legFromNeutral(to);
+  if (!a || !b) return null;
+  return { urls: a.urls.concat(b.urls), ms: a.ms.concat(b.ms) };
+}
+
+/* 换到某个姿势（**唯一入口**）。返回 true = 已经排上（真的落图或在叠化中）。
+ *
+ * 2026-10-21（用户第五次反馈）把这里从"帧路径"改成"一次叠化"：
+ *   「换姿势还是硬切；硬切解决不了就做淡入淡出；**千万别一次性硬切多张图**，
+ *     看起来就像人物闪了一下。」
+ * v15 在这里串的是 4~16 帧的路径（补间帧 + 动作序列正放/倒放），每帧换一次 src，
+ * 帧长 60~140ms —— 用户看到的"闪"就是它，不管每帧画得多准。
+ * 现在只有一条规则：**目标贴片在 SPRITE_MS 内交叉淡入，一次只换一张。**
+ * 中间靠 paint() 的三道闸（幂等 / 持有期 / 最短驻留）保证不会连闪。
+ */
+function poseTo(name, opts) {
+  const o = opts || {};
+  const url = poseUrl(name);
+  if (!url) return false;
+  if (o.hold) S.poseUntil = Date.now() + Number(o.hold);
+  if (name === S.face) return true;          // 已经是这个姿势：只更新持有期，不换图
+  S.face = name;
+  paint(url, o.prio == null ? PRIO.emo : o.prio, o.hold);
+  /* 恒返回 true：调用方（applyEmotion / applyAction / gaze）都把 false 当成"没有路径、你别管"，
+     于是不再安排收尾计时器。现在唯一的路径就是叠化，收尾逻辑必须照常跑。 */
+  return true;
+}
+
+/* 素材清单：卡自己的 assets/char/manifest.json。
+   v17：清单地址由 /api/card 的 assets_manifest 给（`/card-assets/<id>/char/manifest.json`），
+   而且服务端**已经把清单里的帧路径绝对化**，所以下面 seqAbsUrl 只负责兜底
+   （旧布局/清单里写了相对路径时）。容忍几种写法（actions{} / sequences[] /
+   直接「动作名 → 帧数组」），这样美术那边换命名不用改前端。 */
+function seqBase() {
+  return `${ASSET_BASE}char/`;
+}
 
 function seqAbsUrl(p) {
   if (!p) return "";
   const s = String(p);
-  if (/^(https?:)?\//.test(s) || s.startsWith("data:")) return s;
-  return SEQ_BASE + s.replace(/^\.?\//, "");
+  // 服务端下发的是绝对 URL（/card-assets/…），原样用；相对路径才拼基址（兜底）。
+  if (/^(https?:)?\//.test(s) || s.startsWith("data:")) {
+    return s.includes("?") ? s : (s.startsWith("/") ? `${s}?v=${ASSET_V}` : s);
+  }
+  /* 带上素材版本号：清单里的帧也是图片，换素材后同样会被浏览器缓存挡住。 */
+  return seqBase() + s.replace(/^\.?\//, "") + `?v=${ASSET_V}`;
 }
 
 async function loadSeqManifest() {
   let m;
   try {
-    const r = await fetch(SEQ_BASE + "manifest.json", { cache: "no-store" });
+    const r = await fetch(ASSET_MANIFEST, { cache: "no-store" });
     if (!r.ok) return false;
     m = await r.json();
   } catch (e) {
@@ -707,7 +1170,7 @@ async function loadSeqManifest() {
     const url = seqAbsUrl(poseMap[k]);
     if (k in ASSETS.char) ASSETS.char[k] = url;
     if (k in ASSETS.pose) ASSETS.pose[k] = url;
-    // 清单里有、ASSETS 里没登记的（v8 多出来的 look_door / check_phone 等）也收下，
+    // 清单里有、ASSETS 里没登记的（v8 多出来的 check_phone 等）也收下，
     // 否则 director 派了动作、前端却找不到图，会静默回落到表情层。
     if (!(k in ASSETS.char) && !(k in ASSETS.pose)) ASSETS.pose[k] = url;
   });
@@ -758,8 +1221,10 @@ async function loadSeqManifest() {
   Object.keys(TRANS).forEach((k) => delete TRANS[k]);
   Object.assign(TRANS, trans);
   if (m && m.playback && typeof m.playback.crossfadeMs === "number") {
-    // 清单里给多少都只当参考：帧间淡入超过 60ms 就会「两张半透明同时挂着」（见 frameFade）
-    XFADE = Math.max(0, Math.min(60, m.playback.crossfadeMs));
+    /* 2026-10-21：清单里的 crossfadeMs 不再生效。它想解决的问题（帧间"描线沸腾"）
+       和它实际造成的问题（两张不同的画同时半透明 = 重叠）不在同一个量级上，
+       而后者是用户当面报的。需要做对照实验时用 `?xfade=60`，不要改清单。 */
+    XFADE = 0;
   }
 
   console.info("[assets] 清单：" + Object.keys(seq).length + " 个动作序列 / "
@@ -782,20 +1247,21 @@ function applyEmotion(emotion) {
   // 呼吸只对 neutral 脸有效（清单里只有一套中性脸）；换表情就停掉呼吸帧流
   if (emotion !== "neutral") breathStop();
   if (SEQ.on) {
-    // 动作没播完就换表情：先收序列层，别让它盖住新表情
-    seqStop();
-    showSprite(ASSETS.char[emotion] || ASSETS.char.neutral, SPRITE_MS);
+    /* 序列（动作或表情过渡）正在播：**不要中途 seqStop**。
+       以前这里 seqStop() 之后立刻换脸，结果是一段动作/过渡被切成两半 ——
+       探针里 4 帧过渡帧只放了 2 帧就被 thinking 顶掉，肉眼就是「硬切换」。
+       现在只记下情绪就返回；序列收尾的尾帧画的是 **S.emotion**（不是入参），
+       所以这期间又来的新情绪也不会被旧的那次覆盖。 */
     return;
   }
   // neutral→smile 这类组合有专门的过渡帧（2×70ms），比纯叠化更像「表情动了一下」
-  if (prev && prev !== emotion && TRANS[prev + "->" + emotion]) {
-    if (playTransition(prev + "->" + emotion, emotion)) return;
+  /* 2026-10-21 第 4 次修：不再"有过渡帧就播两帧、没有就硬切"，而是统一走 poseTo ——
+     它会从**当前画面上这张**（可能是动作贴片）出发，串出「倒放动作 → 补间到目标表情」
+     的完整帧路径。没有路径的极端情况才落回硬切。 */
+  if (prev !== emotion) {
+    if (poseTo(emotion, { prio: PRIO.emo })) return;
   }
-  /* 时长见 SPRITE_MS（2026-10-20 实测改定）：13 张贴片是 13 张**不同的画**
-     （raw mad 61~80/255，头/肩位置差最多 42px），所以叠化时长就等于"双影窗口"长度。
-     380ms（修 transition 之前实际生效的值）→ 13~23 帧双影，用户报的"重影"就是它；
-     80ms → 5 帧，边缘只轻微柔化，读成"她换了表情"而不是"两个人叠在一起"。 */
-  showSprite(ASSETS.char[emotion] || ASSETS.char.neutral, SPRITE_MS);
+  paint(ASSETS.char[emotion] || ASSETS.char.neutral, PRIO.emo);
 }
 
 function applyScene(scene) {
@@ -816,17 +1282,33 @@ function chip(text) {
   chip._t = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
-/* 卡包声明 8 个动作，贴片现在 8 张都有（look_door / check_phone 于 2026-10-20 补齐），
+/* 卡包声明 7 个动作，贴片现在 7 张都有（check_phone 于 2026-10-20 补齐），
    所以这里不再做近似映射。缺图时下面的 `if (!pose) return;` 会静默跳过，
    回退逻辑在服务端/卡包层，不在客户端猜。 */
 
 function applyAction(action, holdMs, silent) {
   if (action === "idle") return;
+  /* 2026-10-21 用户拍板「一切以说话通道为主」：动作进画面之前先过通道仲裁。
+     以前 applyAction 什么都不查 —— 服务端把 sip_coffee 排到句中、patch 又立刻执行，
+     she 就一边喝一边说。挡住 / 降级都写进观测面板，否则"动作没了"会被当成 bug 去查图。 */
+  const pick = chanPick(action);
+  if (!pick.action) {
+    addMetric("动作让步", `${action}：${pick.reasons.join("；")}`);
+    console.info("[channels] 不播", action, pick.reasons);
+    return;
+  }
+  if (pick.action !== action) {
+    addMetric("动作降级", `${action} → ${pick.action}`);
+    console.info("[channels] 降级", action, "→", pick.action, pick.reasons);
+    action = pick.action;
+  }
   breathStop();          // 动作要占用序列层，先把待机呼吸循环让出来
   if (!silent) chip(LABEL.action[action] || action);
   const stage = $("stage");
-  const hold = Number(holdMs) || 4200;
-  if (action === "look_window" || action === "look_door") stage.dataset.cam = "push";
+  const spec = stageSpec(action);
+  const hold = Number(holdMs) || (spec && spec.hold_ms) || 4200;
+  chanClaim(action, hold);
+  if (action === "look_window") stage.dataset.cam = "push";
   if (action === "lean_in") stage.dataset.cam = "close";
   if (action === "stand") {
     stage.dataset.cam = "push";
@@ -836,20 +1318,18 @@ function applyAction(action, holdMs, silent) {
     stage.dataset.cam = "push";
     setTimeout(() => (stage.dataset.cam = ""), Math.min(hold, 2600));
   }
-  if (action === "look_window" || action === "look_door")
+  if (action === "look_window")
     setTimeout(() => (stage.dataset.cam = ""), Math.min(hold + 600, 4000));
 
   MOTION.settleUntil = performance.now() + 260;
   S.poseUntil = Date.now() + hold;
   clearTimeout(applyAction._t);
-  /* 有多帧序列（清单里有 seq 的动作）就走序列：帧与帧之间是硬切，动作才有方向感；
-     没有就退回原来的单张姿势 + 240ms 叠化（旧素材的行为完全不变）。 */
-  if (playSequence(action, { holdMs: hold })) return;
-  const pose = ASSETS.pose[action];
-  if (!pose) return;
-  /* 姿势互换是两个不同剪影，380/240ms 叠化会先出现「两张半透明的人」（实测截到过），
-     读起来是闪不是动。压到 150ms：肉眼只看到一次交接，看不到双影。 */
-  showSprite(pose, SPRITE_MS);
+  /* 动作也是"换姿势"，走同一个入口：poseTo 会先把当前表情补到 neutral、再正放这条动作
+     自己的 4 帧序列（手臂抬起来）；演完 hold 之后再倒放回 neutral + 补到当前表情。
+     以前这里是 playSequence(action) —— 它永远从 neutral 起播，所以"刚才还是担心的脸"
+     会在序列第 1 帧硬跳成中性脸再演动作，收尾又硬跳回表情贴片：用户看到的那两次硬切
+     就是它。 */
+  if (!poseTo(action, { prio: PRIO.pose, hold: hold })) return;
   applyAction._t = setTimeout(() => {
     /* 2026-10-20 反馈 12：动作演完不要自己塞一张 neutral —— 那是**第二次**抢画面。
        sprite_trace 实测：applyAction 的收尾 showSprite(neutral,…) 落在呼吸循环中间，
@@ -860,17 +1340,18 @@ function applyAction(action, holdMs, silent) {
       BREATH.idx = 0;
       if (!BREATH.on) setTimeout(breathStart, 40);
     } else {
-      /* 动作贴片的姿势是个剪影差异很大的另一张画，收尾要回到中性脸，
-         否则她会一直保持"举着相机"的姿势。 */
-      showSprite(ASSETS.char[S.emotion] || ASSETS.char.neutral, SPRITE_MS);
+      /* 动作演完回到当前表情。走 poseTo 而不是 paint：倒放序列 + 补间回表情，
+         手臂是"放回去"的，不是一张剪影直接跳回坐姿。 */
+      if (!poseTo(S.emotion, { prio: PRIO.base }))
+        paint(ASSETS.char[S.emotion] || ASSETS.char.neutral, PRIO.base);
     }
   }, hold);
 }
 
 function applyEffect(effect) {
-  const rain = $("rain");
-  if (effect === "none") rain.classList.remove("on");
-  else rain.classList.add("on");
+  /* 2026-10-21：雨丝层（#rain）与雨声一起下线 —— 用户第 2 条「去掉雨声的底噪，这个不要了」，
+     视觉那层细斜线本来也是给"雨"做气氛的，留着会和"雨已经停了"的设定打架。
+     雷只用闪光，其余 effect 一律静默。 */
   if (effect === "thunder") doFlash();
 }
 
@@ -888,8 +1369,8 @@ function doFlash() {
  * （服务端 event 字段 / 关键词兜底，见 app/main.py: keyword_event）：
  *
  *   thunder      → 闪电补光（三层渐变闪）+ 低频滚雷（WebAudio 噪声 + 低通 + 包络）
- *   photo_reveal → 角色贴片换成 show_photo + 照片静帧推近 + 徽标
- *   last_train   → 窗外车灯横扫（一条 CSS 光带）+ 远处低频轰鸣
+ *   phone_call   → 她接过手机拨号（v14；贴片 + 屏幕光晕 + 压低环境音）
+ *   ending       → 全屏结局静帧（v14：朋友 / 陌生人）
  *
  * 为什么不再去找替代视频：这类片段必须和底板同一机位/同一光线才不"跳台"，
  * 而程序合成 + 一张静帧已经能把"画面变了、而且是因为你这句话变的"说清楚，
@@ -932,16 +1413,6 @@ function rumble(strength, dur) {
   }
 }
 
-function carSweep() {
-  const s = $("sweep");
-  if (!s) return;
-  s.classList.remove("on");
-  void s.offsetWidth;
-  s.classList.add("on");
-  clearTimeout(carSweep._t);
-  carSweep._t = setTimeout(() => s.classList.remove("on"), 2900);
-}
-
 function hideCinema() {
   const cinema = $("cinema");
   clearTimeout(showStill._t);
@@ -963,7 +1434,7 @@ function showStill(src, badge, ms) {
   const still = $("eventStill");
   if (!still) return;
   if (!src) {
-    degradeEvent("photo_reveal", "该事件没有静帧");
+    degradeEvent("still", "该事件没有静帧");
     return;
   }
   cinema.classList.add("show");
@@ -973,7 +1444,7 @@ function showStill(src, badge, ms) {
   S.mediaEventActive = true;
   still.onerror = () => {
     S.errors += 1;
-    degradeEvent("photo_reveal", "静帧加载失败");
+    degradeEvent("still", "静帧加载失败");
   };
   still.onload = () => {
     if (!S.mediaEventActive) return;
@@ -1003,14 +1474,30 @@ function triggerEvent(kind) {
     chip(badge);
     return;
   }
-  if (kind === "last_train") {
-    carSweep();
-    rumble(0.5, 2.8);
+  if (kind === "phone_call") {
+    /* v14 的视觉事件：她把手机贴到耳边打电话。
+       贴片由 directive.action=phone_call 负责换（见 showSprite），这里只做
+       「世界安静了一瞬」——压低环境音 + 手机屏的一点冷光 + 顶部徽标。
+       不占全屏演出层：打电话不是"切镜头"，是她此刻在做的事。 */
+    const g = $("flash");
+    if (g) {
+      g.style.transition = "none";
+      g.style.background =
+        "radial-gradient(40% 30% at 52% 48%, rgba(207,228,255,.20), transparent 70%)";
+      g.classList.remove("on");
+      void g.offsetWidth;
+      g.classList.add("on");
+      g.style.transition = "";
+      setTimeout(() => { g.style.background = ""; g.classList.remove("on"); }, 900);
+    }
+    ambDuck(true);
+    setTimeout(() => ambDuck(false), 2600);
     chip(badge);
     return;
   }
-  // photo_reveal（以及以后可能加的事件）：有静帧就走静帧，没有就走最简演出
-  const src = (ASSETS.still && ASSETS.still[kind]) || ASSETS.insert.polaroid;
+  if (kind === "ending") return;   // 结局由 handleEnding 单独接管
+  // 其余事件：有静帧就走静帧，没有就走最简演出
+  const src = (ASSETS.still && ASSETS.still[kind]) || null;
   showStill(src, badge, 4600);
 }
 
@@ -1018,11 +1505,6 @@ function degradeEvent(kind, reason) {
   toast(`${reason}：改为最简演出`);
   if (kind === "thunder") {
     doFlash();
-    hideCinema();
-    return;
-  }
-  if (kind === "last_train") {
-    carSweep();
     hideCinema();
     return;
   }
@@ -1169,12 +1651,15 @@ function fireBeat(b) {
   } else if (kind === "gaze") {
     clearTimeout(PERF.gazeTimer);
     const hold = Number(b.hold) || 1600;
-    if (v === "window") showSprite(ASSETS.pose.look_window, SPRITE_MS);
-    else if (v === "away") showSprite(ASSETS.char.thinking, SPRITE_MS);
-    else showSprite(ASSETS.char[S.emotion] || ASSETS.char.neutral, SPRITE_MS);
+    /* 视线也占 gaze 通道：记一笔，后面要抬手的动作才知道"她这会儿正看着窗外" */
+    CHAN.claims.gaze = { action: "gaze:" + v, until: Date.now() + hold };
+    /* 视线也是换姿势，同样走帧路径（以前这里是硬切：她"看一眼窗外"是跳过去的） */
+    if (v === "window") { if (!SEQ.on) poseTo("look_window", { prio: PRIO.gaze, hold: hold }); }
+    else if (v === "away") { if (!SEQ.on) poseTo("thinking", { prio: PRIO.gaze, hold: hold }); }
+    else paint(ASSETS.char[S.emotion] || ASSETS.char.neutral, PRIO.base);
     if (v !== "user") {
       PERF.gazeTimer = setTimeout(() => {
-        showSprite(ASSETS.char[S.emotion] || ASSETS.char.neutral, SPRITE_MS);
+        paint(ASSETS.char[S.emotion] || ASSETS.char.neutral, PRIO.base);
       }, hold);
     }
   } else if (kind === "breath") {
@@ -1362,7 +1847,15 @@ function motionTick() {
     const a = $("charA");
     const b = $("charB");
     if (a && b && !a.classList.contains("is-front") && !b.classList.contains("is-front")) {
-      showSprite(ASSETS.char[S.emotion] || ASSETS.char.neutral, SPRITE_MS);
+      /* 这里必须**绕过优先级**：paint() 的持有期会让低优先级请求被丢掉，而"画面里没人"
+         是唯一不能让的状态（宁可打断一次动作，也不能整张角色层透明）。所以先清掉
+         幂等/持有状态，再以动作档强画一张。 */
+      SPRITE.now = "";
+      HOLD.prio = -1;
+      HOLD.until = 0;
+      SWAP.pending = null;
+      clearTimeout(SWAP.timer);
+      paint(ASSETS.char[S.emotion] || ASSETS.char.neutral, PRIO.pose);
     }
   }
 
@@ -1479,6 +1972,9 @@ const STREAM = {
   sources: [],
   endTime: 0,
   seq: 0,
+  // 每句一个"到点才切字幕"的定时器（见 playStreamItem）。不能共用一格：
+  // 下一句的数据 0.3s 就到，会把上一句还没到点的定时器清掉。
+  capTimers: new Set(),
 };
 
 function streamReset(seq) {
@@ -1489,6 +1985,9 @@ function streamReset(seq) {
   STREAM.sources.forEach((s) => { try { s.stop(0); } catch (e) {} });
   STREAM.sources = [];
   STREAM.endTime = 0;
+  /* 字幕定时器是"每句一个"，打断时必须全部撤掉，否则旧句会在打断后把字幕写回来 */
+  for (const t of STREAM.capTimers || []) clearTimeout(t);
+  STREAM.capTimers = new Set();
 }
 
 /* 共用一个 AudioContext + Analyser：既给"说话起伏"供包络，也避免多个上下文。 */
@@ -1520,27 +2019,27 @@ function audioCtx() {  if (!AMP.ctx) {
    注意：这条 bus 只接流式 PCM；整句 mp3（自带服务端混响）不经过它，避免双重混响。 */
 const ROOM = { inp: null, gain: null, dry: null, conv: null, wet: null, lp: null, ready: false };
 
-/* 流式 PCM 的级别补偿（-18.8dB）。
-   为什么需要：edge 的裸音频几乎是满刻度（实测 RMS ≈ -1.8dBFS），而整句 mp3 那条路
-   在服务端 postprocess.finalize 里被归一化到 **-20dBFS**。两边差 18.7dB —— 不补的话
-   第一句会明显比后面几句响一大截，切换点比没有混响更容易被听出来。
-   取值依据：tools/tts/render_ab_reverb.py 实测 delta = 18.66dB（同文本同音色）。
-   这是固定值：服务端是逐句归一化，所以句与句之间仍有 ±2dB 浮动（见文档 §6）。 */
-const ROOM_GAIN = 0.115;
+/* 流式 PCM 的级别对齐（0.962 ≈ -0.34dB）。
+   为什么需要：整句 mp3 那条路在服务端 postprocess.finalize 里被归一化到 **-20dBFS**；
+   live 裸 PCM 是 edge 的原始电平（实测 RMS -19.0 ~ -22.1dBFS，逐句浮动，因为 edge 不归一化）。
+   ⚠ 2026-10-21 重标（根因见 docs/AUDIO_CLIP_2026-10-21.md 的 R1/R2）：
+   修前这里写的是 0.115（-18.8dB）——那是给**削波方波**做的补偿：量纲 bug 把波形压成 1-bit
+   方波，RMS 被抬高 18.0dB，0.115 正好把响度还回正常，所以"听着音量没问题、但声音是炸的"。
+   量纲修好后同一段音频小了 18dB，沿用 0.115 会让台词掉到 -38.9dBFS（几乎听不见）。
+   标定方法：tools/qa/_probe_recalibrate.py 复刻本文件的 ROOM bus（×gain → dry 0.96 + 卷积湿声
+   → LP 8.2k → shelf），对 6 句台词求"让 destination RMS 落在整句路径 -20.45dBFS"的增益：
+   逐句 0.923–1.000、均值 0.959，取 0.962。实测 destination RMS -20.11 ~ -20.82dBFS。 */
+const ROOM_GAIN = 0.962;
 
-/* 流式 PCM 的**音色**补偿（-10dB @ 3kHz 高架）。
-   为什么需要（2026-10-21 08:1x 同文本实测，tools/tts 外的新证据在 docs/review/p4_verify/）：
-   同一句台词分别走两条路 —— `/api/tts_file`（整句 mp3 + 服务端 postprocess）与
-   `/api/tts_stream`（live 长连，裸 PCM）—— 拿到音频后按 1/3 倍频程比较长时谱，
-   两条的**频谱倾斜差了 4.7dB/oct**（-8.14 vs -3.45），折算成带内差：
-   1–3k +2.4dB、3–5k +6.7、5–7k +11.3、7–9k +12.9、9–11k +15.5。
-   也就是说：第一句明显比后面几句**亮/脆**，而服务端 DSP 那条路被压得很暗。
-   一条回复里第一句亮、第二句起发闷，比"整体偏闷"更容易被听出来（切换点）。
-   这里用一级 high-shelf 把流式路径压到与 DSP 路径同谱：实测带内残差从
-   +15.5dB 收到 ±3.3dB（1–9kHz，见同目录 timbre_match 的两个 wav 与报告 §6）。
-   另一个方向（把 DSP 那条路提亮）会改动所有句子的音色，属于"音色归用户判断"的范围，
-   所以默认不动它；要试就在 postprocess.finalize 里放宽低通/去掉 dulling。 */
-const ROOM_SHELF = { f: 3000, gainDb: -10 };
+/* 流式 PCM 的**音色**对齐（-1.9dB @ 3kHz 高架）。
+   ⚠ 2026-10-21 重标：修前是 -10dB，那是照着**削波产物**标的——1-bit 方波的奇次谐波把
+   5kHz 以上抬高 34–35dB（实测 3–5k +31.1、5–7k +35.3、7–9k +34.9、9–11k +34.5dB，
+   docs/AUDIO_CLIP_2026-10-21.md §2.4），-10dB 只是在压失真，压不平也没有意义。
+   量纲修好后重新做 1/3 倍频程标定（tools/qa/_probe_recalibrate.py，同文本同音色 6 句，
+   250Hz–10kHz）：shelf=0 时两条路的残差只剩 +3.7dB 以内，取 -1.9dB 后
+   3–10kHz 残差 +1.87 ~ -1.72dB、全带 +2.15 ~ -1.43dB（验收标准 ±3dB）。
+   另一个方向（把 DSP 那条路提亮）会改动所有句子的音色，属于"音色归用户判断"，默认不动。 */
+const ROOM_SHELF = { f: 3000, gainDb: -1.9 };
 
 /* 按 postprocess.make_room_ir 的口径生成 IR，并按能量归一化到指定湿声比例。 */
 function makeRoomIR(ctx, wet) {
@@ -1647,6 +2146,7 @@ async function streamPump() {
 async function playStreamItem(item) {
   const ctx = audioCtx();
   if (!ctx) return false;
+  const mySeq = STREAM.seq;   // 排期途中被打断时，字幕定时器要知道自己已经过期
   if (ctx.state === "suspended") await ctx.resume().catch(() => {});
   const t0 = performance.now();
   let res;
@@ -1686,11 +2186,27 @@ async function playStreamItem(item) {
       if (!firstChunkAt) {
         firstChunkAt = performance.now();
         clearTimeout(killer);
-        // 第一块到就开始"说话"：字幕、状态、表演层锚点都在这一刻对齐
-        setState("speaking");
-        setCaption(item.text, false);
-        perfSentStart(item.index, item.estMs || 0);
         S.firstChunkMs = Math.round(firstChunkAt - t0);
+        /* 2026-10-21 用户反馈「明明话还没说到那里，字幕已经放完了」：
+           以前是**数据一到**就切字幕，可这一句的音频还要排在 STREAM.endTime 上等
+           上一句播完 / 等反应时间 / 等句间停顿 —— 数据只要 0.3s 就收全了，声音却
+           还有好几秒才出来，字幕自然跑在声音前面。
+           现在字幕和「说话」状态都跟着**排期时刻**走：at0 是哪一刻开口，字幕就是
+           哪一刻换；数据到达时刻只用来统计首包延迟。 */
+        const at0 = Math.max(startAt, ctx.currentTime + 0.03);
+        const leadMs = Math.max(0, Math.round((at0 - ctx.currentTime) * 1000));
+        /* 每句一个定时器，**不能共用**一个：下一句的数据很快就到（0.3s），
+           若共用 STREAM.capT，它会在上一句的"开口时刻"还没到时就把它 clear 掉，
+           上一句字幕就永远不出现（实测：字幕跳到第 2 句，看起来像"少了一整句"）。 */
+        const capTimer = setTimeout(() => {
+          STREAM.capTimers.delete(capTimer);
+          if (mySeq !== STREAM.seq) return;
+          setState("speaking");
+          setCaption(item.text, false);
+          // 表演层锚点也钉在真实开口时刻（s{i}.start / s{i}.end 才有意义）
+          perfSentStart(item.index, item.estMs || 0);
+        }, leadMs);
+        STREAM.capTimers.add(capTimer);
       }
       let bytes = value;
       if (carry) {
@@ -1711,8 +2227,12 @@ async function playStreamItem(item) {
       for (let i = 0; i < n; i++) ch[i] = pcm[i] / 32768;
       const src = ctx.createBufferSource();
       src.buffer = buf;
-      const bus = roomBus();       // 走混响 bus（客户端补的 0.55s 小房间，见 roomBus）
-      src.connect(bus || AMP.an);
+      /* 2026-10-21 13:4x **直连 analyser（全干）**：这条 bus 原本给流式 PCM 补
+         0.55s 小房间 + 8.2k 低通 + -1.9dB 高架，是为了和服务器 mp3 那条路的音色对齐。
+         用户听完 B 档反馈「有回音」——源就是它，流式路径每一句都过一遍卷积混响。
+         现在两条路都全干（服务器 finalize 也关掉了），所以 bus 不再需要；
+         roomBus()/makeRoomIR 保留，想加回房间把下面这行改回 `src.connect(roomBus() || AMP.an)`。 */
+      src.connect(AMP.an);
       const at = Math.max(STREAM.endTime, ctx.currentTime + 0.03);
       src.start(at);
       STREAM.sources.push(src);
@@ -1730,8 +2250,11 @@ async function playStreamItem(item) {
   // 否则这一句会被吞掉。低于预估时长 45% 就认定失败，退回整句 mp3 兜底。
   const est = Number(item.estMs) || 0;
   if (est > 900 && rendered * 1000 < est * 0.45) {
-    console.warn(`[tts] 流只到 ${(rendered * 1000) | 0}ms / 估 ${est}ms，改整句 mp3`);
-    return false;
+    /* 2026-10-21 13:4x：这里原来 `return false` → streamFallbackMp3 把**同一句**整段
+       再播一遍。已经排进时间线的那半句不会被撤销，于是同一句话叠两次——这就是用户听到的
+       「回音」的第二个来源（第一个是上面的房间 bus）。现在半句就半句：宁可这句短一截，
+       也不能一句话说两遍。真正的补救在服务端（live_edge 空音频重试 + 合成前不吐字节）。 */
+    console.warn(`[tts] 流只到 ${(rendered * 1000) | 0}ms / 估 ${est}ms，保留半句（不再重播整句）`);
   }
   // 真实时长回填：服务端估的时长只用来排 beat，收到真声音后要校正
   if (PERF.sent[item.index]) PERF.sent[item.index].dur = rendered * 1000;
@@ -1945,7 +2468,22 @@ async function startSession(mode) {
   return data;
 }
 
+/* ---------------------------------------------------------------- 预热 */
+
+/* 她开口前的 850ms 是 edge 云端的握手（TCP+TLS+WSS，实测 795–870ms 很稳定）。
+   用户「按下话筒开始说」到「真的发出去」之间有几秒空白，这段时间把握手付掉最划算，
+   否则这 850ms 有一半会露在「她第一句台词」上（2026-10-21 14:5x 用户报的语音延迟）。
+   8s 内不重复打；失败静默——服务端 /api/turn 入口还有一次 prewarm 兜着。 */
+let _warmAt = 0;
+function warmTts(force) {
+  const now = performance.now();
+  if (!force && now - _warmAt < 8000) return;
+  _warmAt = now;
+  fetch("/api/warm", { method: "POST" }).catch(() => {});
+}
+
 async function sendTurn(text, kind = "user") {
+  showYouSaid(text);              // 先把你这句话放上画面，再谈她的回答
   if (!S.sid) await startSession(S.mode);
   let seq = ++S.seq;
   S.activeSeq = seq;
@@ -2033,12 +2571,16 @@ function handleEvent(ev, seq, t0) {
       S.turns += 1;
       break;
     case "subtitle_partial":
+      /* 2026-10-21：以前这里把**正在生成的整段台词**一边打字一边铺到字幕上，
+         于是声音还没到，字幕已经"念"完了（用户报的「字幕跑在声音前面」就是它）。
+         字幕现在只由音频播放时刻驱动（见 playStreamItem / audio.onplaying），
+         这里只留最后一版文本给调试面板，不上屏。 */
       $("subtitle").classList.remove("narration");
-      if (S.state !== "speaking") setCaption(ev.text, true);
+      S.partialText = ev.text;
       break;
     case "reply":
       $("subtitle").classList.remove("narration");
-      if (S.state !== "speaking") setCaption(ev.text, false);
+      S.replyText = ev.text;      // 同上：不抢字幕（她说哪句，由音频决定）
       break;
     case "directive":
       // 剧情类（场景/特效/事件）立刻执行；表演类（表情/动作）交给 beat 排期，
@@ -2110,6 +2652,10 @@ function handleEvent(ev, seq, t0) {
     case "suggest":
       showSuggest(ev.items || []);
       break;
+    case "ending":
+      /* 故事收束（v14）。到这一步不再有下一轮：收起输入、盖结局静帧、给重开入口。 */
+      handleEnding(ev);
+      break;
     case "done":
       S.audioDone = true;
       S.lastTotal = ev.ms;
@@ -2134,6 +2680,44 @@ function handleEvent(ev, seq, t0) {
     case "cancelled":
       break;
   }
+}
+
+/* ---------------------------------------------------------------- 结局
+ * 三个结束方式（见 docs/STORY_v15_EXPANDED.md）：
+ *   friend   —— 借了电话，知道小雪来不了，你们交换了名字
+ *   stranger —— 没借，她等到九点，准时走
+ *   （用户主动说「我要走了」也走 stranger，文案由后端 why 区分为「你先走的」）
+ */
+/* 三个结局的收束语。stranger 与 leave 用的是同一张静帧（卡包里 ending_leave 的 ending
+   字段就是 stranger），但**说的是两件事**：一种是"她等到九点自己走了"，一种是"你先走了"。
+   文案跟着节点走，不跟着静帧走。 */
+const ENDING_TEXT = {
+  friend: "你们交换了名字。她说下次她请。",
+  stranger: "她等到九点，然后走了。你大概不会再见到她。",
+  leave: "你先走了。她没留你，只说了句路上小心。",
+};
+
+function handleEnding(ev) {
+  /* 节点名决定文案：ending_leave 的 kind 也是 stranger（同一个静帧），但它是"你先走了" */
+  S.ending = (ev.node === "ending_leave") ? "leave" : (ev.kind || "stranger");
+  const box = $("ending");
+  if (!box) return;
+  const img = $("endingImg");
+  const bg = $("endingBg");
+  const src = (ASSETS.ending && (ASSETS.ending[S.ending] || ASSETS.ending[ev.kind])) || "";
+  // 两层同一张图：bg 铺满模糊当底（手机竖屏时填掉上下黑边），sharp 是清晰原图。
+  if (img && src) img.src = src;
+  if (bg && src) bg.src = src;
+  $("endingKicker").textContent = (ev.clock || "21:00") + " · 打烊";
+  $("endingText").textContent = ENDING_TEXT[S.ending] || "";
+  box.setAttribute("aria-hidden", "false");
+  box.classList.add("show");
+  document.body.classList.add("ended");
+  // 结局时停掉还在播的语音、清空待播字幕——不能"结语出来了，她还在说上一句"
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) { /* 没有就算了 */ }
+  S.queue.length = 0;
+  STREAM.items.length = 0;
+  setState("idle");
 }
 
 function applyDirective(d, fixes) {
@@ -2178,7 +2762,7 @@ async function interrupt(reason = "voice") {
   S._bargeT = setTimeout(() => {
     if (S.state === "listening" || S.state === "idle") {
       applyEmotion("listen");
-      showSprite(ASSETS.char.listen, SPRITE_MS);
+      paint(ASSETS.char.listen, PRIO.emo);
     }
   }, 620);
   if (!S.sid) return;
@@ -2247,6 +2831,7 @@ async function startMic() {
   }
   if (S.state === "speaking" || S.state === "thinking") await interrupt("voice");
   setState("listening");
+  warmTts();          // 用户说话的这几秒：把握手（≈850ms）提前付掉，不 await
   MIC.busy = true;
   let stream;
   try {
@@ -2698,6 +3283,8 @@ function bind() {
   $("textInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("sendBtn").click();
   });
+  // 打字也是"她在等你说完"的时间：第一次敲字就把合成长连热起来
+  $("textInput").addEventListener("input", () => warmTts());
 
   const mic = $("micBtn");
   mic.addEventListener("pointerdown", (e) => {
@@ -2775,6 +3362,7 @@ function bind() {
     S.seq = 0;
     S.activeSeq = 0;
     syncCloudRow();             // 切到 cloud 才显示 key 行，切回本地立刻收起并清空
+    paintSrvMode();             // 「本轮」那一半要立刻跟着变，不然和上面的下拉自相矛盾
     await startSession(S.mode); // 未填 key 时 startSession 里会 toast「未填 key，已回落本地/自动」
     if (!(S.mode === "cloud" && !S.cloudConfigured)) {
       toast(`已切换 provider：${S.mode === "cloud" ? "云端 DeepSeek" : "本地 Qwen3"}`);
@@ -2848,16 +3436,7 @@ function bind() {
     };
   });
 
-  const ambBtn = $("ambToggle");
-  if (ambBtn) {
-    ambBtn.onclick = () => {
-      const next = !AMB.on;
-      ambienceSet(next);
-      ambBtn.classList.toggle("on", next);
-      toast(next ? "环境音：开（雨后的房间底噪）" : "环境音：关");
-    };
-  }
-
+  /* 2026-10-21：面板上的「雨声底噪」开关随底噪一起删掉（用户明确不要这层音）。 */
   const injectSample = (url) => async () => {
     try {
       const res = await fetch(url);
@@ -2868,8 +3447,9 @@ function bind() {
       toast(`示例语音不可用：${e.message}`);
     }
   };
-  $("sampleVoice").onclick = injectSample("/static/assets/audio/sample_user.wav");
-  $("sampleVoice2").onclick = injectSample("/static/assets/audio/sample_user_2.wav");
+  /* 示例语音也属于「卡素材」（cards/<id>/assets/audio/），跟着基址走，别再写死 /static/。 */
+  $("sampleVoice").onclick = injectSample(assetUrl("audio/sample_user.wav"));
+  $("sampleVoice2").onclick = injectSample(assetUrl("audio/sample_user_2.wav"));
 }
 
 /* 启动时问一次服务端「你现在跑的是哪个 provider」。
@@ -2889,6 +3469,20 @@ const SERVER_MODE_LABEL = {
   cloud: "cloud（DeepSeek）",
 };
 
+/* 「服务端默认 … · 本轮 …」这行在切档后必须跟着变。以前只在 bootProvider 里算一次，
+   于是演示里出现「下拉已是云端 DeepSeek、下面却写本轮 llama」——被录进过一版成片。 */
+function paintSrvMode() {
+  const srv = $("srvMode");
+  if (!srv) return;
+  const mode = S.serverMode || "auto";
+  const actual = mode === "auto"
+    ? `auto（实际链：${S.serverChain || "Qwen3 → Mock"}）`
+    : (SERVER_MODE_LABEL[mode] || mode);
+  srv.textContent = `服务端默认 ${actual} · 本轮 ` +
+    (S.mode === "cloud" ? "cloud（DeepSeek）" : "llama（本地 Qwen3）") +
+    (S.cloudConfigured ? " · DeepSeek 已配置 key" : " · DeepSeek 未配置");
+}
+
 function chainText(h) {
   const chain = Array.isArray(h && h.chain) ? h.chain.filter(Boolean) : [];
   return chain.length ? chain.join(" → ") : "Qwen3 → Mock";
@@ -2907,11 +3501,12 @@ async function bootProvider() {
     }
     const srv = $("srvMode");
     if (srv) {
-      const actual = h.mode === "auto"
-        ? `auto（实际链：${chainText(h)}）`
-        : (SERVER_MODE_LABEL[h.mode] || h.mode);
-      srv.textContent = `服务端实际 provider：${actual} · llm=${h.llm || "-"}` +
-        (S.cloudConfigured ? " · DeepSeek 已配置 key" : " · DeepSeek 未配置 key");
+      /* 这一行原来只写服务端**进程默认**档（auto），和上面 select 选中的「云端 DeepSeek」
+         并排时读起来像自相矛盾（真机演示里被拍进去过）。分开写清楚：默认是什么、
+         这一轮用的是什么。 */
+      S.serverMode = h.mode;
+      S.serverChain = chainText(h);
+      paintSrvMode();
       // auto/mock/strata 都不在前端两档里：标黄提醒「你选的本地档 ≠ 服务端实际档」
       srv.classList.toggle("warn", h.mode !== "llama" && h.mode !== "cloud");
     }
@@ -2930,10 +3525,26 @@ async function bootProvider() {
 bind();
 setState("idle");
 bootProvider();
-$("plateA").src = ASSETS.plate.cafe_night;
-$("plateA").classList.add("is-front");
-$("charA").src = ASSETS.char.neutral;
-$("charA").classList.add("is-front");
+/* 首屏两层图（场景板 + 人物）。素材基址要等 /api/card 回来才知道（v17：素材在卡里），
+   所以先画兜底的旧布局，拿不到就维持——拿到后按新基址重画一次，避免首屏 404 白屏。 */
+function paintInitialAssets() {
+  $("plateA").src = ASSETS.plate.cafe_night;
+  $("plateA").classList.add("is-front");
+  $("charA").src = ASSETS.char.neutral;
+  $("charA").classList.add("is-front");
+}
+paintInitialAssets();
+/* 卡包快照的**预取**：startSession 里还会再取一次（那时要拿 labels/stage，且必须成功）。
+   这里只为一个目的——素材基址在用户点「开始」之前就该定下来，否则首屏那两张图
+   会按兜底布局去取、404。拿不到（服务端没起）就保持兜底，不影响别的流程。 */
+fetch("/api/card")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((c) => {
+    if (!c || !c.assets_base || S.card) return;   // 已经应用过就不再重复
+    applyCard(c);
+    paintInitialAssets();
+  })
+  .catch(() => { /* 服务端没起：交给 startBtn 的报错提示 */ });
 /* 打断/新一轮会 abort 在途的 fetch 和 reader：这是**预期行为**，不该冒到控制台变成
    "unhandled rejection"。只吞 AbortError，其它错误照常抛。 */
 window.addEventListener("unhandledrejection", (e) => {
@@ -2961,10 +3572,13 @@ window.__mira = {
      量呼吸/闪烁时必须能关掉它，否则一次动作换图会污染帧间差。 */
   nudge: NUDGE,
   applyEmotion, showSprite, playTransition,
+  /* QA 用：表演通道仲裁（tools/qa/probe_caption_sync.py / check_channels.py 对拍用）。
+     claims 是当前通道占用表，pick() 会真的算一遍——看到"动作没了"先看这里。 */
+  chan: { claims: CHAN.claims, pick: chanPick, busy: chanBusy, speech: speechBusy, spec: stageSpec },
   /* QA 用：历史面板（tools 里可直接断言 transcript 有没有落、台词里有没有 JSON 头） */
   history: HIST, refreshHistory, exportHistory,
-  /* QA 用：演出层（没有视频了，这三个是现在的全部入口，见 tools/qa/event_shots.py） */
-  triggerEvent, hideCinema, showStill, carSweep, rumble,
+  /* QA 用：演出层（没有视频了，这几个是现在的全部入口，见 tools/qa/v14_shots.py） */
+  triggerEvent, hideCinema, showStill, rumble, handleEnding,
   /* QA 用：关掉持续微动（layers_test 要比较「换表情时背景是否一个像素都没动」，
      呼吸位移会让人物轮廓移动 5px，那是动画不是图层串位）。 */
   setMotion(on) {

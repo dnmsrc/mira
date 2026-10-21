@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
 <meta name="theme-color" content="#0b1018" />
 <title>Mira · 雨后的咖啡馆</title>
-<link rel="stylesheet" href="/static/style.css" />
+<link rel="stylesheet" href="/static/style.css?v=12" />
 </head>
 <body>
 <div id="app">
   <!-- 场景层：背景板（固定、无人物）+ 角色贴片（带 alpha，独立切换）+ 氛围叠加。
        人物和场景是两张独立素材，换表情不会带动场景重绘。
        2026-10-20：这里不再有任何 <video>。原来一段待机循环 + 三段演出片段
-       （thunder / photo_reveal / last_train）是 AniSora 生成的，机位、光线、景深都和
+       （那批雷电 / 特写 / 末班车片段）是 AniSora 生成的，机位、光线、景深都和
        底板不是同一场戏，一播就是"背景换台"；已全部删除，演出改由程序合成 + 静帧完成。 -->
   <div id="stage" class="stage">
     <img id="plateA" class="layer" alt="" draggable="false" />
@@ -31,8 +31,6 @@
       </div>
     </div>
     <div id="dim" class="dim"></div>
-    <div id="rain" class="rain"><i></i><i></i><i></i></div>
-    <div id="sweep" class="sweep"></div>
     <div id="flash" class="flash"></div>
     <div id="grain" class="grain"></div>
   </div>
@@ -41,6 +39,22 @@
   <div id="cinema" class="cinema" aria-hidden="true">
     <img id="eventStill" alt="" draggable="false" />
     <div id="cinemaBadge" class="cinema-badge"></div>
+  </div>
+
+  <!-- 结局层（v14）：全屏静帧 + 一句结语 + 重新开始。
+       「能结束」是面试核心体验之一——故事走完必须有一个明确的收束画面，
+       而不是停在一个还能继续输入、但其实已经没有下一轮的界面。 -->
+  <div id="ending" class="ending" aria-hidden="true">
+    <!-- 两层同一张图：endingBg 铺满并重度模糊当底（解决 contain 在竖屏里上下留黑），
+         endingImg 是清晰原图。素材本身就是 9:16，桌面 1080×1920 下 contain 正好满屏，
+         模糊层看不见；手机上（如 390×844，比例更竖）才靠它填边。 -->
+    <img id="endingBg" class="ending-bg" alt="" aria-hidden="true" draggable="false" />
+    <img id="endingImg" class="ending-sharp" alt="" draggable="false" />
+    <div class="ending-card">
+      <div class="ending-kicker" id="endingKicker">21:00 · 打烊</div>
+      <div class="ending-text" id="endingText"></div>
+      <button class="chip-btn ending-btn" id="endingRestart" type="button">再看一遍</button>
+    </div>
   </div>
 
   <!-- 顶部 HUD -->
@@ -64,9 +78,9 @@
   <!-- 开始遮罩 -->
   <div id="gate" class="gate">
     <div class="gate-card">
-      <div id="gateKicker" class="gate-kicker">23:47 · 暴雨刚停</div>
+      <div id="gateKicker" class="gate-kicker">20:30 · 即将打烊的咖啡馆</div>
       <h1>Mira 在等你</h1>
-      <p id="gateTagline">一家即将打烊的咖啡馆。她穿着琥珀色雨衣，坐在窗边，似乎在等一个不会来的人。</p>
+      <p id="gateTagline">20:30，一家 21:00 打烊的咖啡馆。她在等一个两年没见的人，而她的手机没电了。</p>
       <div class="gate-meta">实时语音 · 角色表演 · 场景演出</div>
       <button id="startBtn" class="primary">进入场景</button>
       <div class="gate-note">提示：按住麦克风说完松开就发送；她说话时按下麦克风可以打断她</div>
@@ -80,6 +94,15 @@
          当成她说的话（用户实测「旁白与字幕冲突」）。现在旁白在字幕上方、带竖线、
          冷色斜体、无描边，并且永不与台词同时出现在同一行。 -->
     <div id="narration" class="narration-bar"><span id="narrationText"></span></div>
+    <!-- 「你说」：把你刚说出口的那句话留在主画面上。
+         为什么必须有：以前用户的话只在输入框里（发送即清空），点建议条时连输入框都
+         没经过 —— 画面唯一的变化就是她突然开口，观众看到的就是"她在自说自话"。
+         位置在字幕上方：视线顺序是「旁白（场景）→ 你说 → 她说」，
+         一眼能看出这一轮是谁在说话、她是在回答哪一句。
+         样式上必须一眼区别于她的台词（右对齐气泡、淡、无描边），否则会被当成她的台词。 -->
+    <div id="youSaid" class="you-said" aria-live="polite">
+      <div class="you-bubble"><span class="you-who">你</span><span id="youSaidText"></span></div>
+    </div>
     <div id="subtitle" class="subtitle" aria-live="polite">
       <span id="caption"></span><span class="caret"></span>
     </div>
@@ -152,11 +175,6 @@
       <button id="sampleVoice2" class="chip-btn">示例语音 · 雷</button>
       <span class="dp-note">走同一条 STT 通路</span>
     </div>
-    <div class="dp-row">
-      <label>环境音</label>
-      <button id="ambToggle" class="chip-btn on">雨声底噪</button>
-      <span class="dp-note">程序合成的房间底噪，不盖台词</span>
-    </div>
     <div class="dp-metrics" id="metrics"></div>
     <div class="dp-events" id="events"></div>
   </aside>
@@ -179,6 +197,6 @@
 
   <div id="toast" class="toast" hidden></div>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>

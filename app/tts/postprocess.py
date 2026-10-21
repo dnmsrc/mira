@@ -10,6 +10,11 @@
   5. 两级一阶低通（≈8.5kHz），去掉 TTS 干声的「齿音发亮」
   6. 铺 -58dBFS 粉噪底噪：让停顿不再是数字静音
   7. RMS 归一化到 -20dBFS，峰值 ≤ -1.5dBFS
+
+2026-10-21 13:4x：**第 4/5/6 步默认全关**（用户反馈「有回音」，且「AI 感还是很浓」）。
+0.55s 的房间尾 + 8.2k 低通 + 底噪三段叠起来，在耳机上是「录音棚里的朗读」；关掉之后
+听到的是 edge 干声本身，齿音亮但近、有人味。代码全部保留（make_room_ir / lowpass_fast /
+pink_noise），要加回房间把 wet 调回 0.16、dull=True、room_tone_db=-58 即可。
 """
 
 from __future__ import annotations
@@ -205,8 +210,8 @@ def place(clips: list[np.ndarray], gaps_ms: list[int], lead_ms: int = 80,
     return out
 
 
-def finalize(x: np.ndarray, *, wet: float = 0.16, dull: bool = True,
-             room_tone_db: float = -58.0, target_rms_db: float = -20.0,
+def finalize(x: np.ndarray, *, wet: float = 0.0, dull: bool = False,
+             room_tone_db: float | None = None, target_rms_db: float = -20.0,
              peak_db: float = -1.5, sr: int = SR) -> np.ndarray:
     y = add_room(x, wet, sr)
     if dull:

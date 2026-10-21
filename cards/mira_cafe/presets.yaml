@@ -34,7 +34,7 @@ presets:
       - "……嗯。你坐吧。"
       - "外面还在下？"
       - "这个点进来，是躲雨吧。"
-    perf: { emotion: neutral, action: look_door }
+    perf: { emotion: neutral, action: idle }
 
   - id: greet_second
     act: greeting
@@ -114,7 +114,7 @@ presets:
       - "嗯，走吧。"
       - "……那就这样。"
       - "门别关太响。"
-    perf: { emotion: neutral, action: look_door }
+    perf: { emotion: neutral, action: idle }
 
   # ---------------------------------------------------------------- 沉默 / 单字
   - id: silence_huh
@@ -127,7 +127,7 @@ presets:
       - "嗯？"
       - "……怎么了。"
       - "你说什么？"
-    perf: { emotion: thinking, action: look_door }
+    perf: { emotion: thinking, action: idle }
 
   - id: silence_soft
     act: silence

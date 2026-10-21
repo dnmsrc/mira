@@ -188,6 +188,19 @@ def _load_items(raw: dict, card: dict) -> list[Preset]:
     beat_ids = {b["id"] for b in beats}
     rels = {b.get("rel") for b in beats if b.get("rel")}
 
+    # 2026-10-21：卡从线性七拍换成 v14 的 20 节点故事线，旧预设里的 beat 名
+    # 全都不存在了。这里做一层别名映射，让招呼/应答/告别这类**与剧情无关**的
+    # 预设继续生效（它们才是「0 生成快速回复」的价值）。
+    # 剧情相关的预设如果引用了新节点里不存在的语义，会在下面被跳过，不会报错。
+    BEAT_ALIAS = {
+        "probe": "order",
+        "admit": "waiting",
+        "photo": "two_years",
+        "absence": "rain_worry",
+        "choice": "last_minutes",
+        "closing": "lights_dim",
+    }
+
     items: list[Preset] = []
     seen: set[str] = set()
     for i, d in enumerate(raw.get("presets") or []):
@@ -209,10 +222,12 @@ def _load_items(raw: dict, card: dict) -> list[Preset]:
         for r in rel:
             if rels and r not in rels:
                 _fail(f"{pid}: rel「{r}」不是卡包里任何一拍的 rel（{', '.join(sorted(rels))}）")
-        beat = tuple(d.get("beat") or ())
-        for b in beat:
-            if b not in beat_ids:
-                _fail(f"{pid}: beat「{b}」不在卡包的拍里")
+        beat = tuple(BEAT_ALIAS.get(b, b) for b in (d.get("beat") or ()))
+        bad_beat = [b for b in beat if b not in beat_ids]
+        if bad_beat:
+            # 引用了不存在的拍 → 跳过这条预设（而不是让整张卡起不来）。
+            # 旧故事（照片/三年/阿岸）的预设会走到这里。
+            continue
 
         lines = [str(x).strip() for x in (d.get("lines") or []) if str(x).strip()]
         if len(lines) < 3:

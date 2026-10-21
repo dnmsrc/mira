@@ -28,9 +28,31 @@ NEURAL_CACHE = ROOT / "media" / "tts_neural"  # 神经音频的本地缓存（�
 NEURAL_CACHE.mkdir(parents=True, exist_ok=True)
 TTS_CACHE.mkdir(parents=True, exist_ok=True)
 
-VERSION = "neural-1"          # 换模型/改 instruct/改后处理时 +1，旧缓存自动失效
+VERSION = "neural-4"          # 换模型/改 instruct/改后处理/换参考音色时 +1，旧缓存自动失效
 ENGINE = "cosyvoice2"
-VOICE = "zero_shot_prompt"    # 参考音色（真人 wav，见 docs/VOICE_NEURAL.md 素材来源）
+
+# 参考音色：**从卡里读**（cards/mira_cafe/card.yaml → character.voice.neural）。
+# 为什么不再写死：卡是"换引擎/换参考"的唯一入口，写死在这里就等于在卡上没法表达
+# （v9 之前 character.voice.name 只有 edge 音色名，providers 的神经路径根本不读它）。
+# ref_sha1 进缓存 key → 换参考文件缓存自动失效；/api/health 还能对出侧车加载的是不是
+# 卡里这份（serve_neural /health 会报 prompt_sha1）。
+def _voice_cfg() -> dict:
+    try:
+        from .. import persona          # 卡已经由 persona 读好，不新开 IO
+
+        return dict(getattr(persona, "VOICE_NEURAL", {}) or {})
+    except Exception as exc:  # noqa: BLE001  卡坏了也不能让 TTS 模块 import 失败
+        print(f"[tts] read card voice.neural failed: {type(exc).__name__}: {exc}", flush=True)
+        return {}
+
+
+_VC = _voice_cfg()
+REF = ROOT / str(_VC.get("ref") or "assets/voice/ref_zh_female_young.wav")
+REF_SHA1 = str(_VC.get("ref_sha1") or "").strip().lower()
+SPEED = float(_VC.get("speed") or 1.0)
+PROMPT_TEXT = str(_VC.get("prompt_text") or "")
+# 进缓存 key 的音色标识：优先卡里的 ref_sha1 前 12 位，退化为文件名。
+VOICE = REF_SHA1[:12] if REF_SHA1 else REF.stem
 BASE_URL = os.environ.get("MIRA_TTS_NEURAL_URL", "http://127.0.0.1:8790").rstrip("/")
 
 # 模型文件目录（mira-tts 环境里下载的 ModelScope 快照）。available() 会扫这个目录,
@@ -39,7 +61,7 @@ MODEL_ROOT = Path(os.environ.get("MIRA_TTS_MODEL_DIR", ROOT / "models" / "models
 SNIPPET_FILES = ("llm.pt", "flow.pt", "hift.pt")
 
 _PROBE_TTL = 5.0
-_probe = {"at": 0.0, "ok": False, "engine": "", "detail": ""}
+_probe = {"at": 0.0, "ok": False, "engine": "", "detail": "", "ref_match": None, "prompt": ""}
 
 
 def _model_present() -> bool:
@@ -71,7 +93,13 @@ def health(timeout: float = 1.5) -> dict:
 
 
 def available() -> bool:
-    """侧车在线 + 模型已加载 + 权重在盘上。结果缓存 5s,避免每句都探一次。"""
+    """侧车在线 + 模型已加载 + 权重在盘上。结果缓存 5s,避免每句都探一次。
+
+    另外核对**侧车加载的参考音频是不是卡里那份**（serve_neural /health 的 prompt_sha1）：
+    对不上时打一行警告并在 _probe 里记 ref_match=False（/api/health 可见），但**不掐掉
+    声音**——演示时宁可音色是旧的，也不能因为一次配置漂移整轮没声。想换成真·强制一致:
+    把这里 return 改成 `ok and ref_match`。
+    """
     import time
 
     now = time.time()
@@ -79,14 +107,30 @@ def available() -> bool:
         return _probe["ok"]
     ok = False
     detail = ""
+    ref_match = None
+    prompt_name = ""
     if _model_present():
         h = health()
         ok = bool(h.get("ok")) and h.get("status") == 200
+        prompt_name = str(h.get("prompt") or "")
+        side_sha = str(h.get("prompt_sha1") or "").strip().lower()
+        if REF_SHA1 and side_sha:
+            ref_match = side_sha == REF_SHA1
+            if not ref_match:
+                print(f"[tts] 参考音色不一致：卡里 ref_sha1={REF_SHA1[:12]} "
+                      f"({REF.name})，侧车加载的是 {prompt_name or '?'} sha1={side_sha[:12]}"
+                      f" —— 重启侧车（tools/tts/start_neural.ps1）才会用卡里那份", flush=True)
         detail = f"{h.get('engine')}/{h.get('device')}/{h.get('error')}"
     else:
         detail = "model files missing"
-    _probe.update({"at": now, "ok": ok, "engine": detail, "detail": detail})
+    _probe.update({"at": now, "ok": ok, "engine": detail, "detail": detail,
+                   "ref_match": ref_match, "prompt": prompt_name})
     return ok
+
+
+def probe_state() -> dict:
+    """调试/健康检查用：上一次探测的结果（含参考音频是否与卡一致）。"""
+    return dict(_probe)
 
 
 def cache_name(text: str, emotion: str, position: str) -> str:
@@ -146,6 +190,10 @@ async def synth_cached(text: str, emotion: str = "neutral", *,
     import httpx
 
     payload = {"text": text, "emotion": emotion, "position": position}
+    if SPEED and abs(SPEED - 1.0) > 1e-6:
+        # 卡里 voice.neural.speed：侧车会把它传给 CosyVoice 的 speed 参数
+        # （**流式路径上游会忽略它**，见 docs/VOICE_NEURAL.md §7；非 1.0 时行为可能不一致）
+        payload["speed"] = SPEED
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=1.0),
                                  trust_env=False) as client:
         r = await client.post(BASE_URL + "/synth", json=payload)

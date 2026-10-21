@@ -21,8 +21,8 @@
 这一版改了什么（答非所问的结构性修复）
 - 旧版 `_INTENT_RULES` 只有 7 个意图，且 **意图→content 是一对一静态映射**：
   「为什么这么晚还在」和「你为什么不去找他」都落到 `why`，拿到同一句
-  「约好十点半，他一直没来」——后一个问题等于没回答。这不是模型弱，是结构上
-  就没把「问的是哪件事」表示出来。现在先判**槽位**（回去方式/联系方式/照片/
+  「约好八点半，她一直没来」——后一个问题等于没回答。这不是模型弱，是结构上
+  就没把「问的是哪件事」表示出来。现在先判**槽位**（回去方式/联系方式/手机/
   咖啡/怕不怕/为什么不去找……），每个槽位有自己的 content 和 anchors。
 - 旧版 default 轮只给一句元指令「先正面回应对方这句话」，**没有 content**。
   4B 拿不到可说的东西，只能从最近见过的词里抓一个凑（实测会编出
@@ -61,7 +61,22 @@ _INTENT_RULES: list[tuple[str, re.Pattern]] = [
     # 「打算 / 怎么办 / 寄不寄」：问的是**决定**，不是把照片再描述一遍。排在 photo 前面，
     # 否则「照片要寄出去吗」只因为句子里有「照片」就落到 photo（chat_probe 第 9 句）。
     ("choice", re.compile(r"打算|怎么办|接下来|以后(怎么|呢)|寄出|寄给|要不要寄|该不该")),
-    ("photo", re.compile(r"照片|相片|相册|看看.*(照|相)|那张")),
+    # 2026-10-22：**对方把手机借给她**——这是本场戏的分岔点，必须单独成槽。
+    # 实测（mira-history-2a2eeba53425）：用户说「我的借你吧」「我不是说了借给你吗」，
+    # 两轮都没命中任何槽（含「手机」的被 photo 吃成「我手机没电」，不含的被兜底成 react），
+    # 于是导演层给的是「不要拐回你在等的人」——**直接压掉了这条剧情线该有的反应**，
+    # 她只好复读「我手机七点就没电」。必须排在 photo / offer / request 之前：
+    # 这几条都会先抢走「手机」「电话」「打」这些字。
+    ("give_phone", re.compile(r"我的?借你|借给你|借我吧|我给你用|用我的?(手机)?(吧|啊|打)?|"
+                              r"拿我的|手机给你|你拿去用|我这儿?有手机|我手机(还)?有电|"
+                              r"^那?你?打吧|[你您]打吧|去打吧|用你(的)?(手机)?打")),
+    ("photo", re.compile(r"手机|充电|没电|电量|打电话|拨号")),
+    # 2026-10-22：**「她不会来了」这类判断**。实测用户连说两轮
+    # 「是不是不会来了」「我感觉她不会来了」，两轮都落到 react，
+    # 导演层给的指令是「不要拐回你在等的人」——她说自己等的人会不会来，
+    # 这轮恰恰**必须**拐回去（那是整场戏的压力源）。这才是「自说自话」的主因。
+    ("she_not_come", re.compile(r"(她|他|人家).{0,6}(不会|没|不)(来了|来)|不会来了|来不了|"
+                                r"不来了|还没来|一直没来|是不是不来了|会不会不来")),
     # 提议：接受/拒绝 + 理由。必须排在 request 前面，否则「帮你打个电话」
     # 会因为句子里有「电话」被当成「索取号码」（实测就踩过这个坑）
     ("offer", re.compile(r"我帮你|帮你打|要不要(我)?帮|需要我|要不我|我替你|我给他打")),
@@ -96,7 +111,7 @@ _INTENT_RULES: list[tuple[str, re.Pattern]] = [
                            r"能(坐|待)(一会|会儿)|能不能(坐|待)")),
     # 「末班车还有多久」问的是车，不是「你等了多久」。不单列的话会落到 howlong，
     # 答成「约好十点半，现在快十二点了」（chat_probe 第 10 句）。
-    ("last_train", re.compile(r"末班车|末班|最后一班|班车")),
+    ("last_train", re.compile(r"末班车|末班|最后一班|班车")),  # v14 故事里没有末班车，恒不命中
     # 「你在这家店做过多久了」问的是**工作年限**，不是「你等了多久」。
     # 2026-10-21：以前被 howlong 的裸「多久了」吃掉，模型逐字照搬错 content
     # （「约好十点半。现在快十二点了。」）——实机可复现。
@@ -270,13 +285,13 @@ def strip_latin(text: str) -> tuple[str, list[str]]:
 
 # 硬边界：卡包规定「不要主动说出阿岸这个名字」，只有被直接问到时才说一次。
 # 这是可机检的（不是提醒模型注意，而是真的会拦），所以放在 forbid 里。
-_NAME = "阿岸"
+_NAME = "小雪"
 
 # 卡包事实表里的具体锚点（与 cards/mira_cafe/card.yaml 的 character.facts 对齐）。
 # 为什么在这里再抄一份：导演层的通用兜底需要一个「哪些词算具体事实」的白名单，
 # 而 director.py 刻意不读卡包（不依赖 yaml、纯函数、可单测）。卡包改事实时这里要一起改。
-_FACT_WORDS = ("相机", "胶片", "胶卷", "咖啡", "雨衣", "照片", "内袋", "老板娘",
-               "十点半", "十二点", "三年", "四十七", "第二杯", "黑咖啡")
+_FACT_WORDS = ("相机", "胶片", "胶卷", "咖啡", "雨衣", "手机", "小雪", "老板娘",
+               "八点半", "九点", "两年", "四十七", "第二杯", "黑咖啡")
 
 # 通用问题抽话题词时先去掉这些问句/口语功能词，剩下的连续汉字就是「问的是哪件事」
 _STOP_WORDS = ("可不可以", "是不是", "能不能", "要不要", "为什么", "怎么样", "什么",
@@ -301,12 +316,12 @@ _REDUP = re.compile(r"^(.)(?:不|没|够)\1$")
 _TOPIC_GROUPS: tuple[tuple[str, ...], ...] = (
     ("回去", "回家", "住", "走", "车", "地铁", "打车", "夜班", "路"),
     ("号码", "手机", "电话", "微信", "联系", "不给", "明天"),
-    ("照片", "相片", "内袋", "相机", "看"),
+    ("手机", "没电", "充电", "打不了", "联系"),
     ("咖啡", "苦", "糖", "喝", "杯", "凉"),
     ("怕", "害怕", "一个人", "老板娘", "人"),
     ("骗", "真的", "没骗", "信"),
     ("找", "去", "不知道", "问过", "哪"),
-    ("等", "等一个人", "十点半", "第二杯", "人"),
+    ("等", "等人", "八点半", "小雪", "第二杯", "人"),
     ("疼", "冷", "累", "困", "饿"),
 )
 
@@ -318,7 +333,8 @@ class Plan:
     intent: str = "default"
     must: list[str] = field(default_factory=list)      # 必须逐字出现的内容（名字等）
     avoid: list[str] = field(default_factory=list)     # 本轮软禁用的词（复读/意象）
-    forbid: list[str] = field(default_factory=list)    # 硬边界：出现即重写（名字）
+    forbid: list[str] = field(default_factory=list)    # 硬边界：句中出现 → 整句弃用（零延迟）
+    withhold: list[str] = field(default_factory=list)  # 本拍「还没到说的时候」的词（信息闸门）
     max_chars: int = 45
     note: str = ""                                     # 塞进提示词末尾的指令
     critical: bool = False                             # 关键轮：整段阻塞生成 + 校验
@@ -351,10 +367,19 @@ class Plan:
             else:
                 lines.append(f"这一轮要做到的：{self.content}")
         if self.anchors:
-            # 把「必须落在哪件事上」直接写成可执行的检查：4B 对「回答必须出现 X」
-            # 的服从率远高于「请正面回答」这种元指令（后者是它最容易忽略的一句）。
-            lines.append("回答必须点在这件事上（用得到这些词：" +
-                         "、".join(self.anchors[:6]) + "），不许用天气/灯/雨/窗外代替回答。")
+            # 2026-10-22：与「还没到说的时候」（self.forbid）撞车的词**不展示**。
+            # 提示词一边说「他刚问的就是八点半这件事」、一边说「还不能说八点半」，
+            # 模型只能二选一——实测它选说漏嘴，然后被删句，这一轮就白了。
+            shown = [a for a in self.anchors[:4]
+                     if not any(w and (w in str(a) or str(a) in w)
+                                for w in (self.withhold or self.forbid))]
+            if shown:
+                lines.append("他刚问的是这件事：" + "、".join(shown)
+                             + "。先用一句话正面回应它（用你自己的说法，不要照抄这几个字），"
+                             "不许用天气/灯/雨/窗外代替回答。")
+            else:
+                lines.append("他刚问的是他那句话本身。先用一句话正面回应它（用你自己的说法），"
+                             "不许用天气/灯/雨/窗外代替回答。")
         if self.must:
             lines.append(f"必须出现的内容：{'、'.join(self.must)}（原样说出来）")
         if self.must_ask:
@@ -378,9 +403,10 @@ class Plan:
         body = (reply or "").strip()
         if not body:
             return ["空台词"]
-        for bad in self.forbid:
-            if bad in body:
-                out.append(f"不能说出「{bad}」")
+        # 本拍禁词不在这里判（2026-10-22）：句子里出现禁词已经由
+        # main.push_sentence 整句弃用（不进 TTS、不上字幕，零延迟）。
+        # 在这里再判一次只会触发「整段重写」——多一次模型调用（1.5–3s），
+        # 而换掉的通常只是一句话。两者是同一个后果，后者贵十倍。
         for token in self.must:
             if token not in body:
                 out.append(f"没有说出「{token}」")
@@ -420,46 +446,42 @@ class Plan:
         # 窗口取 5 而不是 3：实测在一段 7 轮的对话里，第 7 轮逐字复读了**第 2 轮**
         # （「嗯，雨停了，街面都湿透了。」），3 句窗口刚好漏掉它，观众听到的是
         # 「她在念台词」。5 与 s.recent 的保留长度、提示词里展示的句数一致。
+        # 以下四项以前都是**硬判（→ 整段重写）**，2026-10-22 全部降为留痕：
+        # 用户实测「改完比改之前更差」，主因就是这一串硬判把每一轮都拖进
+        # 「判违规 → 再调一次模型（1.5–3s）→ 还不合格 → 念节点 mock」。
+        # 这些判据本身没错，错在**用重写去治措辞**：措辞该由提示词和后处理
+        # （删句/剥词）解决，重写只留给「必须出现的事实没出现」这类硬失败。
+        # 硬失败只剩三条：空台词、must 没出现、英文词、编时间（见上）。
         window = (recent or [])[-5:]
         for prev in window[-3:]:
             if prev and _overlap(body, prev) > 0.8:
-                out.append("和最近说过的一句几乎一样，必须换一种说法")
+                self.notes.append("复读（软）：和最近说过的一句几乎一样")
                 break
         head = _head_prefix(body)
-        # 门槛从 4 降到 3：首句闸门拿**第一句**来判，而 4B 最典型的复读开头就是
-        # 「嗯，确实」这种 3 字短句（实测一段 7 轮对话里，「嗯，确实」原样出现在
-        # 第 2 / 5 / 7 轮，中间夹着别的句子，靠 4 字门槛一次都没拦住）。
         if len(head) >= 3 and any(head in _norm(p) for p in window if p):
-            out.append("开头半句和最近说过的一句一样，必须换一种说法")
-        # 复读第二层：**中段/后半句**逐字搬运。实测第 5 轮「你在等谁」答成
-        # 「说好会来的人。十点半，现在快十二点了。」——后半句逐字来自第 4 轮，
-        # 开头检查完全看不见它。按逗号切成分句，任一截 >=6 字且出现在最近 3 句里就判复读。
+            self.notes.append("复读（软）：开头半句和最近说过的一句一样")
         for prev in window[-3:]:
             pn = _norm(prev)
             if not pn:
                 continue
             dup = next((c for c in _clauses(body) if c in pn), "")
             if dup:
-                out.append(f"「{dup}」上一轮刚说过，必须换一种说法")
+                self.notes.append(f"复读（软）：「{dup}」上一轮刚说过")
                 break
-        # 结尾又反问：她话少，答完就该收住。4B 最爱用半句问号把话撑长
-        # （实测「你是在等人吗」→「嗯。等一个人。……这店里的灯，还亮着吗？」）。
-        # 只有明确要求把话头交回去的轮次（must_ask），或槽位本身就允许用一句
-        # 关心把话递回去的（allow_question，目前只有「拒绝给号码」——拒绝后问一句
-        # 「你明天还来吗」是软化，不是跑题），才允许以问号收尾。
         if not (self.must_ask or self.allow_question) and re.search(r"[？?][」”'\"]?\s*$", body):
-            out.append("结尾又反问了：把问号那半句删掉，答完就收住")
+            self.notes.append("结尾反问（软）：她话少，答完更该收住")
         if _STAGE.search(body):
-            out.append("出现了括号/星号旁白")
+            self.notes.append("旁白（软）：台词里出现了括号/星号动作描写")
         if _SERVICE.search(body):
-            out.append("客服腔")
+            self.notes.append("客服腔（软）")
         if not first:
             for bad in self.avoid:
                 if bad in body:
-                    out.append(f"又用了「{bad}」")
+                    self.notes.append(f"又用了「{bad}」（软，这轮禁用词）")
+                    break
             clean = re.sub(r"\s", "", body)
             if len(clean) > self.max_chars + 20:
-                out.append(f"太长（{len(clean)} 字）")
+                self.notes.append(f"太长（软，{len(clean)} 字）")
         return out
 
     def check(self, reply: str) -> list[str]:
@@ -789,7 +811,7 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
 
     beat 是**跳拍之后**的当前拍：内容要守卡包的「这一拍能松口什么」，否则
     提示词里「这一拍绝对不要说」和末尾的 plan 指令会互相打架，4B 会挑省力的那条
-    （实测：第 2 拍就说出照片/三年）。
+    （实测：第 2 拍就说出手机没电）。
     """
     facts = list(facts or [])
     new_facts = list(new_facts or [])
@@ -833,13 +855,13 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
         # 只有上一轮说的是「照片」时才进 photo 槽（否则答成「照片在雨衣内袋里」，
         # 把对方要看的东西换掉了 —— 独立盲评第二段第 5 句）。
         blob = "".join(recent)
-        if "照片" in blob or "相片" in blob:
-            intent = "photo"
-        elif "相机" in blob:
+        if "相机" in blob or "拍" in blob:
             intent = "handover"
+        else:
+            intent = "photo"   # 默认按「她想让你帮个忙 / 问手机」处理
 
     # 阿岸这个名字只有被直接问到时才允许出现一次；其它轮次硬拦。
-    forbid = ["阿岸"] if intent != "name" else []
+    forbid = ["小雪"] if intent != "name" else []
     avoid = list(dict.fromkeys(_overused(recent) + _props_ban(recent)))
     name = _last_name(facts)
 
@@ -887,39 +909,73 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
 
     if intent == "name":
         return Plan(
-            intent="name", must=["阿岸"], avoid=avoid, forbid=[], max_chars=28, critical=True,
-            content="阿岸。……他叫阿岸。",
-            note="对方直接问了他的名字。只这一次，说出「阿岸」；说完就收住，不要解释、不要继续讲他的事。",
-            fallback="阿岸。……就这一次。",
+            intent="name", must=["小雪"], avoid=avoid, forbid=[], max_chars=28, critical=True,
+            content="小雪。……她叫小雪。",
+            note="对方直接问了她等的人叫什么。只这一次，说出「小雪」；说完就收住，不要解释、不要继续讲她的事。",
+            fallback="小雪。……大学室友。",
         )
 
     if intent == "followup":
         # 问「后来 / 有没有消息」：absence 拍（beat>=4）才允许说「再没出现」；
         # 更早的拍只说「没消息」，不提照片、不提三年（守卡包 allow）。
-        content = ("后来再没出现过。……没消息，也没回来。" if beat >= 4
-                   else "没消息。……从那天起，就没消息了。")
+        content = ("还没消息。……我手机没电，也问不了。" if beat >= 6
+                   else "还没消息。……她一向不迟到。")
         return Plan(
             intent="followup", avoid=avoid, forbid=forbid, max_chars=42, gate=True,
             topic="他后来有没有再联系（后来的事）",
             anchors=["后来", "再没", "没消息", "没联系", "没回来", "不知道"],
             content=content, fallback=content,
             note="对方在追问「后来」——问的是他**有没有再出现、有没有消息**，"
-                 "不是问你要不要给号码，也不是让你再看一遍照片。先直接答这件事"
+                 "不是问你要不要给号码，也不是让你再说一遍手机。先直接答这件事"
                  "（再没出现 / 没消息），再补半句你现在的样子。不要拿灯、雨、地垫岔开。",
         )
 
     if intent == "choice":
         # 问「你打算怎么办 / 照片寄不寄」：答案落在**决定**上（还没决定、先留着），
         # 不是把照片再描述一遍。卡包 choice 拍也要求不自己下结论、把选择抛回去。
-        content = ("还没决定。……该不该寄出去，我也在想。" if beat >= 5
-                   else "还没决定。……先放着吧。")
+        content = ("还没决定。……等到打烊吧，再等等。" if beat >= 12
+                   else "还没决定。……先坐着吧。")
         return Plan(
             intent="choice", avoid=avoid, forbid=forbid, max_chars=42, gate=True,
-            topic="你打算怎么办 / 照片要不要寄",
-            anchors=["决定", "还没", "寄", "留着", "再想想", "放着"],
+            topic="你打算怎么办 / 还等不等",
+            anchors=["决定", "还没", "等", "走", "再想想", "坐着"],
             content=content, fallback=content,
-            note="对方问的是**你打算怎么办**（照片寄不寄），不是让你再描述一遍照片。"
-                 "先答「还没决定」，再给半句打算（先留着 / 再想想）；不要自己把结局定下来。",
+            note="对方问的是**你打算怎么办**（还等不等），不是让你再描述一遍小雪。"
+                 "先答「还没决定」，再给半句打算（再等等 / 等打烊）；不要自己把结局定下来。",
+        )
+
+    if intent == "she_not_come":
+        # 内容随拍推进：早拍还在自我安慰，中间只能说不知道，借到电话之后转向不安。
+        # 三条都不给结论——卡包 boundaries 明写「不要给出小雪不来了/出事了这类结论」。
+        if beat >= 8:
+            content = "……我还是不放心。她不是不接电话的人。"
+        elif beat >= 5:
+            content = "不知道。……她那边地势低。"
+        else:
+            content = "……应该快了。她说下雨也来。"
+        return Plan(
+            intent="she_not_come", avoid=avoid, forbid=forbid, max_chars=40, gate=True,
+            topic="她等的那个人会不会来",
+            anchors=["不知道", "应该", "快了", "地势", "下雨", "放心", "等", "来"],
+            content=content, fallback=content,
+            note="对方在替你担心「她会不会不来」。先接住这句担心（用你的话说，别只回一个「嗯」），"
+                 "再给一句你自己的判断或自我安慰。**不许给结论**（不说「她不会来了」"
+                 "「她出事了」），也不许用天气、灯、窗外代替回答。",
+        )
+
+    if intent == "give_phone":
+        # content 由 _apply_node 用**当前节点的 mock** 覆盖（作者写的本拍台词就是方向）。
+        # 这里给的是节点未知时也能用的兜底：接过手机、犹豫一下、不要推第三轮。
+        return Plan(
+            intent="give_phone", avoid=avoid, forbid=forbid, max_chars=34, gate=True,
+            topic="对方要把手机借给你打电话",
+            anchors=["借", "打", "电话", "手机", "可以", "麻烦", "谢谢"],
+            content="……可以吗？真的就一个电话。",
+            content_is_fact=True,
+            fallback="……可以吗？真的就一个电话。",
+            note="对方**已经把手机递过来了**。不要再说「我手机没电」——那件事已经说过，"
+                 "对方正是为此才借你手机。先接住这个动作（可以吗 / 谢谢 / 真的就一个电话），"
+                 "再给半句犹豫；不要假客气推第三轮，也不要自己先拨号。",
         )
 
     if intent == "handover":
@@ -936,19 +992,20 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
         )
 
     if intent == "photo":
-        # 照片在第 4 拍之后才允许拿出来；更早被问到就走「还没到松口的时候」的版本。
-        if beat >= 3:
-            content = "照片在雨衣内袋里，边角被摸软了。……你要看，我可以拿出来。"
+        # v14：照片道具整组删除，这个槽改成「问手机 / 想帮忙联系」。
+        # 她七点起手机就没电，所以答案是「打不了」，但这个答案本身要留一点余地。
+        if beat >= 6:
+            content = "我手机没电了。……从七点开始。我知道该打个电话。"
         else:
-            content = "照片在雨衣内袋里，一直放着。……现在先不拿出来。"
+            content = "手机没电了。……从七点就没了。"
         return Plan(
             intent="photo", avoid=avoid, forbid=forbid, max_chars=45, gate=True,
-            topic="能不能看看照片（给不给）",
-            anchors=["照片", "相片", "内袋", "拿", "给", "看"],
+            topic="手机 / 能不能联系上小雪",
+            anchors=["手机", "没电", "充电", "打不了", "七点", "联系"],
             content=content, content_is_fact=True,
-            fallback="照片在雨衣内袋里，边角被摸软了。",
-            note="对方想看照片。这一轮要给明确反应：给，或者不给 + 一个具体理由。"
-                 "不要含糊带过，也不要用「不是」开头。",
+            fallback="手机没电了。……从七点就没了。",
+            note="对方在问你手机 / 能不能联系上小雪。老实说手机没电（七点起），"
+                 "但**不要自己开口借手机**——这个要求必须对方提出来。",
         )
 
     if intent == "request":
@@ -973,38 +1030,42 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
             content="不用。……我要是想打，早就打了。",
             fallback="不用。我要是想打，早就打了。",
             note="对方提议帮你打电话。明确回应（不用），再给理由：你要是想打，早就打了。"
-                 "不要说「不是」，不要扯到照片。",
+                 "不要说「不是」，不要扯到手机没电。",
         )
 
     if intent == "why_not_go":
-        # 为什么不去找他 → 槽位是「不去的理由」，不是「为什么在这里等」。
-        if beat >= 4:
-            content = "不知道他在哪。……三年了，一直没找到。"
-            anchors = ["找", "不知道", "问过", "三年", "哪"]
-        else:
-            content = "不知道他在哪。……问过，没人知道。"
-            anchors = ["找", "不知道", "问过", "哪"]
+        # 问「为什么不去找她」——槽位是「不去的理由」，不是「为什么在这里等」。
+        # 2026-10-22：这里原来答的是「不知道他在哪……三年了，一直没找到」，
+        # 是 v13（阿岸线、三年）的文案；v14 是「小雪 / 两年 / 手机没电」，
+        # 她根本**知道**小雪在哪（约好了这家店），不去的理由是联系不上。
+        content = ("不知道她那边什么情况。……我手机没电，联系不上。"
+                   if beat >= 5 else
+                   "只知道约的这家店。……别的联系方式也没有。")
         return Plan(
             intent="why_not_go", avoid=avoid, forbid=forbid, max_chars=45, gate=True,
-            topic="为什么不去找他",
-            anchors=anchors, content=content, fallback=content,
-            note="注意：对方问的是「你**为什么不去找他**」，不是「你为什么在这里等」。"
-                 "先回答「不去的理由」（不知道他在哪 / 问过没人知道），"
-                 "不要说等的时间，不要提拍照，不要给结论。",
+            topic="为什么不去找她",
+            anchors=["不知道", "联系", "没电", "地址", "店", "号码"],
+            content=content, fallback=content,
+            note="注意：对方问的是「你**为什么不去找她**」，不是「你为什么在这里等」。"
+                 "先回答「不去的理由」（只知道约的这家店 / 手机没电联系不上），"
+                 "不要说等了多久，不要给结论。",
         )
 
     if intent == "doubt":
-        # 第 1 拍还不能把「十点半/快十二点」全说出来（卡包 allow 只允许含糊承认等人）
-        content = ("没骗你。我就是在等人。" if beat < 1
-                   else "没骗你。我就是在等人，等到快十二点了。")
+        # 2026-10-22：这里原来的后半句是「等到快十二点了」——那是 v13（阿岸线、
+        # 23:47 打烊）的时间。v14 换成 20:30 开场的闺蜜线之后，这句话既不合场景
+        # 时钟，也会被时间白名单判成编钟点，白重写一轮。现在只用卡包里真有的
+        # 「八点半」（clock.start 是 20:30，但约定时间就是八点半）。
+        content = "没骗你。我就是在等人。" if beat < 1 \
+            else "没骗你。我就是在等人。……说好八点半的。"
         return Plan(
             intent="doubt", avoid=avoid, forbid=forbid, max_chars=40, gate=True,
             topic="你是不是在骗我",
-            anchors=["骗", "没骗", "真的", "信", "等", "十二点"],
+            anchors=["骗", "没骗", "真的", "信", "等", "八点半"],
             content=content,
             fallback=content,
             note="对方在怀疑你说谎。第一句必须正面否认（「没骗你」），再给一个具体事实"
-                 "（你真的在等人、十点半等到快十二点）。不要用「不是」两个字糊过去。",
+                 "（你真的在等人 / 说好八点半）。不要用「不是」两个字糊过去。",
         )
 
     if intent == "fear":
@@ -1111,48 +1172,47 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
         )
 
     if intent == "last_train":
-        # 「末班车还有多久」：她不知道时刻表，就老实说不知道 + 给一个自己的打算。
-        # 旧版落到 howlong，答成「约好十点半，现在快十二点了」（问的是车，答的是等）。
-        content = "不知道还有几班。……我走回去，十来分钟。"
+        # v14：故事里没有末班车了。这个槽保留形状，但答案改成「店要关了，我还没打算走」。
+        content = "没看车。……老板娘还没关灯，我再坐会儿。"
         return Plan(
             intent="last_train", avoid=avoid, forbid=forbid, max_chars=40, gate=True,
-            topic="末班车还有多久",
-            anchors=["末班", "车", "几班", "班次", "不知道", "走", "分钟"],
+            topic="怎么回去 / 还坐多久",
+            anchors=["车", "回去", "走", "关灯", "坐"],
             content=content, fallback=content,
-            note="对方问的是**末班车还有多久**，不是问你等了多久。你不知道班次，"
-                 "就直说不知道还有几班，再补半句你怎么回去（走回去十来分钟）。",
+            note="对方问你打算怎么回去 / 还坐多久。你说没看车，"
+                 "老板娘还没关灯，你想再坐一会儿——还没打算走。",
         )
 
     if intent == "howlong":
         return Plan(
             intent="howlong", avoid=avoid, forbid=forbid, max_chars=38, gate=True,
             topic="等了多久",
-            anchors=["十点半", "十二点", "点", "小时", "久"],
-            content="约好十点半。现在快十二点了。",
-            fallback="约好十点半。现在快十二点了。",
-            note="对方在问等了多久。给时间：约好十点半，现在快十二点了。直接答，不要绕。",
+            anchors=["八点半", "九点", "点", "小时", "久"],
+            content="约好八点半。……现在快九点了。",
+            fallback="约好八点半。现在快九点了。",
+            note="对方在问等了多久。给时间：约好八点半，现在快九点了。直接答，不要绕。",
         )
 
     if intent == "where":
         return Plan(
             intent="where", avoid=avoid, forbid=forbid, max_chars=40, gate=True,
-            topic="他在哪 / 去哪了",
-            anchors=["不知道", "哪", "没说过", "找", "三年"],
-            content="不知道。……他没说过要去哪。" if beat < 4 else "不知道。……三年了，我一直不知道他在哪。",
-            fallback="不知道。他没说过要去哪。",
-            note="对方在问那个人在哪。你不知道，就直说不知道（卡包规定不许给结论、不许编去处），"
-                 "不要用景物岔开。",
+            topic="她为什么没来 / 在哪",
+            anchors=["不知道", "哪", "没来", "堵", "找", "两年"],
+            content="不知道。……她那边地势低。" if beat < 6 else "不知道。……两年没见，我也不知道她那边什么情况。",
+            fallback="不知道。她那边地势低。",
+            note="对方在问小雪为什么没来 / 她人在哪。你确实不知道——手机没电，联系不上。"
+                 "直说不知道，可以补半句你猜的（她那边地势低）。不要编结论。",
         )
 
     if intent == "why":
         return Plan(
             intent="why", avoid=list(dict.fromkeys(avoid + ["雨", "天气", "夜色"])), max_chars=42,
             forbid=forbid, gate=True, topic="为什么这么晚还在（等）",
-            anchors=["等", "十点半", "没来", "约好", "电话"],
-            content="约好十点半，他一直没来。我没给他打电话。",
-            fallback="约好十点半，他一直没来。",
-            note="对方在问你为什么在这种天气里等。第一句必须给一个**具体原因**：你跟他约好了十点半，"
-                 "他一直没来。不要用「不是」开头，也不要用灯、后门、老板娘这些店里的事岔开。",
+            anchors=["等", "八点半", "没来", "约好", "手机"],
+            content="约好八点半，她一直没来。我手机没电，联系不上。",
+            fallback="约好八点半，她一直没来。",
+            note="对方在问你为什么在这种天气里等。第一句必须给一个**具体原因**：你跟小雪约好了八点半，"
+                 "她一直没来，而你手机没电联系不上。不要用「不是」开头，也不要用灯、后门、老板娘岔开。",
         )
 
     if intent == "wait_who":
@@ -1180,14 +1240,14 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
                 content=content, fallback=fallback, note=note,
             )
         else:
-            content = "嗯。等一个人。说好十点半，现在快十二点了。"
-            anchors = ["等", "一个人", "人", "十点半", "第二杯"]
+            content = "嗯。等一个人。说好八点半，现在快九点了。"
+            anchors = ["等", "一个人", "人", "八点半", "第二杯"]
         return Plan(
             intent="wait_who", avoid=avoid, forbid=forbid, max_chars=45, gate=True,
             topic="你是不是在等人 / 等谁",
             anchors=anchors, content=content, fallback=content,
             note="对方在问你是不是在等人。承认在等人就够了（「等一个人」这个程度），"
-                 "但不要说他叫什么、不要提三年前的事。"
+                 "但不要说她叫什么、不要提两年没见的事。"
                  "注意：不能说「我不是在等人」这种否定句——你就是在等人，只是不说等谁。"
                  "不要拿店里的灯、后门、老板娘来岔开话题。",
         )
@@ -1309,15 +1369,20 @@ def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str
     # 回答里必须点到它——否则 4B 会滑到写景（AB 基准实测：「今天天气不错啊，我明天还要上班」
     # 被答成「湿透的路反光挺怪的……你走的时候记得带伞」，一个词都没接住）。
     must = [c for c in _CONCRETE if c in text][:1]
-    content = (f"他刚说了一件关于他自己的事（关键词：{keys}）。先用你自己的话说一句反应"
-               "（不要照抄他的词），再补半句你自己的、具体的话；不要拐回你在等的人。")
+    content = (f"他刚说的那句（关键词：{keys}）是冲你说的。先用你自己的话对这句话做出"
+               "反应（不要照抄他的词），再补半句你自己的、具体的话。")
     return Plan(
         intent="react", avoid=list(dict.fromkeys(avoid + scenery[:4])), forbid=forbid,
         must=must, max_chars=45, gate=True,
         content=content, content_is_fact=False,
-        note="对方在说自己的事（天气、上班、累）。先接住他那件事（用你的话说，"
-             "但要说到他提的那件事上），再给半句你自己的。不要照抄他的原话，"
-             "不要用一句景物描写代替回应，也不要答成你上一轮的台词。",
+        # 2026-10-22 修：原来这条 note 写死「对方在说自己的事（天气、上班、累）」——
+        # 那是在**替模型描述用户说了什么**，而用户实际说的是「我不认识你，别跟我说话」
+        # （拒绝/表态）或「你说话怎么莫名其妙的」（质问）。模型照着这段错误的描述
+        # 去答，自然接不住，于是出口闸判不合格、整段重写、最终落 mock——
+        # 用户听到的「自说自话、念台词」就是这条链。只描述该怎么反应，不预设内容。
+        note="对方刚说了一句冲你来的话（表态 / 拒绝 / 评价）。先对这句话本身做出反应："
+             "认下、不认、或者挡回去，用你自己的话说，再补半句。"
+             "不要改成聊天气景物，也不要答成你上一轮的台词。",
     )
 
 
@@ -1367,14 +1432,14 @@ _EMOTION_BY_INTENT: dict[str, str] = {
 
 # 动作只给「能读出意图」的那几个；其余交出 control return None，保留本拍的既定动作。
 _ACTION_BY_INTENT: dict[str, str] = {
-    "photo": "show_photo",
+    "photo": "check_phone",
     "coffee": "sip_coffee",
     "coffee_who": "sip_coffee",
     "work_here": "lean_in",
     "closing": "look_window",
     "habit": "look_window",
     "given_offer": "lean_in",
-    "handover": "show_photo",
+    "handover": "lean_in",
     "ask_cold": "lean_in",
     "greeting": "lean_in",
     "wait_who": "look_window",
@@ -1476,14 +1541,174 @@ def off_topic_plan() -> "Plan":
     )
 
 
+# ---------------------------------------------------------------- 节点约束（真相源）
+def node_forbid_words(node: dict | None) -> list[str]:
+    """本拍不能说出口的具体词（卡包 story.nodes[].forbid_words）。
+
+    为什么不从 forbid 那句自然语言里现抽：卡包里的 forbid 是写给作者看的一句话
+    （「不要说在等人；不要提手机」），机检需要的是**能逐字匹配的词**。让作者显式
+    写一次词表，比在代码里猜「等一个人」算不算「等人」可靠，也换卡即换规则。
+    """
+    out: list[str] = []
+    for w in (node or {}).get("forbid_words") or []:
+        w = str(w or "").strip()
+        if w and w not in out:
+            out.append(w)
+    return out
+
+
+def apply_node(plan: Plan, node: dict | None, *, first_entry: bool = False) -> Plan:
+    """把「这一拍」的边界压到导演层的计划上。
+
+    ## 为什么必须有这一层（2026-10-22 实测）
+
+    `_plan_turn` 那张 30 个槽的意图表是**线性七拍时代**写的：它给每个槽配一句
+    写死的 content，优先级高于卡包的节点。v14 换成 story 节点图之后，两套东西
+    各说各的，而导演层永远赢：
+
+      · arrival 节点的 forbid 明写「不要说在等人；不要提手机」；用户第一句
+        「这么晚了，你一个人？」被判成 wait_who，content 直接给
+        「嗯。等一个人。说好八点半，现在快九点了。」——**第一句就把底牌交了**。
+        用户反馈的「一开始就这么热情、什么都往外说」就是这一句的连锁反应。
+      · phone_dead 该说手机没电；用户「那你打吧」被判成 react，content 换成
+        通用反应，模型只能从最近台词里抓，于是复读「我手机没电了」。
+      · 用户「我的借你吧」落到 react，content 写着「**不要拐回你在等的人**」，
+        把整条借电话的剧情线按了下去。
+
+    这一层只做四件事，不重写那张表：
+
+      1) 节点的 forbid_words → 出口闸门的**硬禁词**（说出口就会被 rewrite/兜底）；
+      2) content 里一旦命中硬禁词，整条 content **作废**——宁可让模型按节点的
+         allow 自己说，也不让它照着一条越界的台词演（作废后 main.py 的兜底会
+         自动落到本节点作者写的 mock 上，安全）；
+      3) 节点的 goal / allow / forbid 进 note **最前面**，压过意图表的措辞指令；
+      4) 借手机这类「动作已经发生」的轮次，content 直接用本节点 mock 当方向。
+    """
+    if not isinstance(node, dict) or not node.get("id"):
+        return plan
+
+    words = node_forbid_words(node)
+    # 信息闸门（2026-10-22 重做）：节点的 forbid_words 是「这一拍还没到说的时候」的
+    # 信息，**不是**「说了就重写」的违规词。两者区别很关键：
+    #   · 作为 withhold：写进提示词（他问起要挡回去）+ 句中命中就删掉那一句（零延迟）；
+    #   · 作为 forbid 硬判：会触发整段重写（+1.5~3s），而上一条实测就是这样把
+    #     每一轮都逼进「重写→仍不合格→念节点 mock」。
+    # 另外它**不再与 anchors 求差集**：那样等于「他问什么就把什么从禁词表里放开」，
+    # 一被追问就全交代了。要守的是信息，展示层冲突由 prompt_block 过滤 anchors 解决。
+    if words:
+        plan.withhold = list(dict.fromkeys(list(plan.withhold or []) + words))
+        plan.forbid = list(dict.fromkeys(list(plan.forbid or []) + words))
+
+    # 1b) note 里也可能命令她说出禁词。实测 wait_who 槽的固定提示词是
+    #     「第一句必须给一个具体原因：你跟小雪约好了八点半，她一直没来，而你手机
+    #     没电联系不上」——而本拍禁词正是「小雪 / 没电 / 电话」。note 在提示词里
+    #     优先级最高（就在【本轮怎么走】第一段），留着它等于每一轮都逼模型违规，
+    #     然后被闸门判死、整段重写、最终落 mock。含禁词的句子整句删掉：
+    #     宁可让她按节点 allow 自己说，也不留一条"必须违规"的指令。
+    if plan.note and words:
+        kept: list[str] = []
+        for sent in re.split(r"(?<=[。！？；\n])", plan.note):
+            if not sent.strip():
+                continue
+            hit = next((w for w in words if w in sent), "")
+            if hit:
+                plan.notes.append(f"提示词命令她说「{hit}」（本拍禁词），已删该句")
+                continue
+            kept.append(sent)
+        plan.note = "".join(kept).strip()
+
+    # 1c) avoid（「这轮禁用这些词」）与节点 allow 冲突时解除。实测 arrival 的 allow
+    #     明写「可以说雨很大」，而意图表给 wait_who 的 avoid 是「雨、天气、夜色」——
+    #     同一段提示词里又允许又禁止，整段复核必然判「又用了雨」再重写一轮
+    #     （logs/turns.jsonl 里这条理由出现过 4 次）。
+    allow_text = str(node.get("allow") or "") + str(node.get("mock") or "")
+    if plan.avoid and allow_text:
+        freed = [w for w in plan.avoid if w and w in allow_text]
+        if freed:
+            plan.avoid = [w for w in plan.avoid if w not in freed]
+            plan.notes.append("本拍 avoid 与节点 allow 冲突，已解除：" + "、".join(freed))
+
+    # 4) 「对方已经把手机借给你」：本拍的 mock 就是作者写的那句正确反应。
+    #    2026-10-22 实测两种落点都要处理：
+    #    · 还在手机线（phone_dead / phone_offer）：mock 就是「可以吗？真的就一个电话」；
+    #    · 已经打完了（call_ok / release / ending…）：用户说「我不是说了借给你吗」
+    #      只是在确认/抱怨，她该按**当前这一拍**说话，不能再接一句「可以吗」。
+    if plan.intent == "give_phone":
+        mock = str(node.get("mock") or "").strip()
+        if mock:
+            plan.content = mock
+            plan.fallback = mock
+            plan.content_is_fact = True
+            if not str(node.get("id") or "").startswith("phone"):
+                plan.notes.append(
+                    f"借手机这件事已经过去了（现在在 {node['id']}），先应一句就按本拍说")
+
+    # 5) scripted 节点：这一拍的台词是**事件本身**（她在打电话 / 已经到结局），
+    #    不该被「对方刚问了什么」改写。卡包给它 mock + scripted: true。
+    if node.get("scripted"):
+        mock = str(node.get("mock") or "").strip()
+        if mock:
+            plan.content = mock
+            plan.fallback = mock
+            plan.content_is_fact = True
+            plan.note = ("这一拍是在演一件正在发生的事，不是回答对方的问题："
+                         "只说她此刻真的在说的那几句，短、断续。\n" + plan.note)
+
+    # 2) content 越界 → 作废。必须清掉 fallback：兜底台词是同一句越界的话，
+    #    留着它等于"重写失败后照样念出来"。
+    if plan.content and words:
+        hit = next((w for w in words if w in plan.content), "")
+        if hit:
+            plan.notes.append(
+                f"本拍（{node['id']}）不能说「{hit}」，导演层的固定台词已作废，改由节点 allow 驱动")
+            plan.content = ""
+            plan.content_is_fact = False
+            plan.fallback = ""
+
+    # 3) 节点是这一拍的真相：目标/能说什么/不能说什么放最前面
+    def _one_line(v: object) -> str:
+        return " ".join(str(v or "").split())
+
+    title = _one_line(node.get("title")) or str(node.get("id"))
+    goal = _one_line(node.get("goal"))
+    allow = _one_line(node.get("allow"))
+    forbid = _one_line(node.get("forbid"))
+    deflect = _one_line(node.get("deflect"))
+    # 信息闸门（2026-10-22）：节点不只是"这一拍该说什么"，更是**她此刻肯让人知道到
+    # 哪一层**。用三层写法把它讲清楚，模型才知道"没到说的时候"该怎么处理：
+    #   可以让人知道的（allow）→ 这一层能松口的事实；
+    #   还没到说的时候（forbid）→ **不是「不能说」，而是「不会主动说，被问要挡」**；
+    #   怎么挡（deflect）      → 一句可执行的挡法，否则模型只能沉默或编造。
+    # 最后一句「一次只说一层」是治「一上来就把底牌全交」的那半句：3–5 分钟的戏
+    # 靠的是同一件事分三次松口，而不是第一轮把名字、时间、原因一口气说完。
+    head = f"你现在在「{title}」这一拍" + (f"：{goal}" if goal else "。")
+    if allow:
+        head += f"\n这一拍你可以让人知道的：{allow}"
+    if forbid:
+        head += f"\n还没到说的时候：{forbid}"
+    if deflect:
+        head += f"\n他要是问到这些，你就这样挡过去：{deflect}"
+    head += "\n一次只松一层，别把后面几拍的事一起说完；已经说过的话不要再说一遍。"
+    plan.note = head + ("\n" + plan.note if plan.note else "")
+    if first_entry and words:
+        plan.notes.append(f"本拍硬禁词：{'、'.join(words)}")
+    return plan
+
+
 def plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str] | None = None,
               recent: list[str] | None = None, is_open: bool = False, beat: int = 0,
               turn_no: int = 0, prev_contents: list[str] | None = None,
-              prev_topics: list[str] | None = None) -> Plan:
-    """给这一轮定计划。纯函数：同样的输入永远得到同样的计划（可单测、可复现）。"""
+              prev_topics: list[str] | None = None,
+              node: dict | None = None, first_entry: bool = False) -> Plan:
+    """给这一轮定计划。纯函数：同样的输入永远得到同样的计划（可单测、可复现）。
+
+    node = 当前故事节点（卡包 story.nodes 里那一条）。传进来后，节点的
+    goal/allow/forbid 会成为**硬约束**，见 apply_node 的说明。
+    """
     plan = _plan_turn(text, facts=facts, new_facts=new_facts, recent=recent,
                       is_open=is_open, beat=beat, turn_no=turn_no,
                       prev_contents=prev_contents, prev_topics=prev_topics)
+    plan = apply_node(plan, node, first_entry=first_entry)
     # 对方自己说过的时间允许她复述（「你不是说七点来的吗」）：把他这句话里的时间
     # 并进白名单，否则她会因为「引用了对方说过的时间」被判编造。
     plan.time_ok = time_tokens(text)

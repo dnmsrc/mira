@@ -68,8 +68,8 @@ def main():
           not ({"audio", "audio_stream"} & set(kinds)), str(kinds))
     check("open turn has narration instead of speech",
           any(e["t"] == "subtitle" and e.get("silent") for e in ev), str(kinds))
-    check("open turn opens with the look_door action",
-          any(e["t"] == "directive" and e["directive"]["action"] == "look_door" for e in ev),
+    check("open turn opens with the idle action",
+          any(e["t"] == "directive" and e["directive"]["action"] == "idle" for e in ev),
           str([e["directive"]["action"] for e in ev if e["t"] == "directive"]))
     check("open turn offers suggestions to move on",
           any(e["t"] == "suggest" and e.get("items") for e in ev), str(kinds))

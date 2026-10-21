@@ -79,11 +79,9 @@ class MockLLM(BaseLLM):
         if messages and messages[-1].get("kind") != "open":
             for event, words in persona.MOCK_KEYWORD_EVENTS.items():
                 if any(w in user_text for w in words):
-                    if event == "photo_reveal" and beat < 2:
-                        continue  # 太早拿出照片不符合剧情节拍
                     directive["event"] = event
-                    if event == "photo_reveal":
-                        directive["action"] = "show_photo"
+                    if event == "phone_call":
+                        directive["action"] = "phone_call"
                     if event == "thunder":
                         directive["effect"] = "thunder"
                         directive["emotion"] = "surprised"
@@ -265,7 +263,10 @@ class FallbackLLM(BaseLLM):
 
     name = "auto"
     DEAD_COOLDOWN = 45.0   # 失败后这段时间内不再尝试，过了再给一次机会
-    PROBE_TIMEOUT = 0.25   # 端口不通就别发请求，直接换下一个
+    # TCP 预检超时。2026-10-21 从 0.25s 提到 1.2s：本机 loopback 连不上 8080 只可能是
+    # 端口真没开，而 0.25s 在"事件循环正被同步 CPU 活占住"（启动预热、后处理）时会
+    # 误判 —— 实测启动时误判一次，整轮就掉到 Mock，界面看着正常其实没调模型。
+    PROBE_TIMEOUT = 1.2
 
     def __init__(self, chain: list[BaseLLM], *, sticky_primary: bool = False):
         self.chain = chain
@@ -319,7 +320,12 @@ class FallbackLLM(BaseLLM):
             provider = self.chain[i]
             if i != self._good and not await self._reachable(provider):
                 self._dead[i] = now          # 端口都没开：直接跳过，不当成错误
+                if os.environ.get("MIRA_LLM_DEBUG"):
+                    print(f"[llm] {provider.name} TCP 预检没过（{getattr(provider, 'base_url', None)}），"
+                          f"跳过", flush=True)
                 continue
+            if os.environ.get("MIRA_LLM_DEBUG"):
+                print(f"[llm] 试 {provider.name} …", flush=True)
             started = False
             it = provider.stream(messages, timeout=timeout).__aiter__()
             try:
@@ -336,7 +342,11 @@ class FallbackLLM(BaseLLM):
                     if not started:
                         started = True
                         self.last = provider.name
-                        if not self.sticky_primary or i == 0:
+                        # 2026-10-21：**链尾（兜底）不许钉成 _good**。以前 auto 链第一次
+                        # 预热撞上瞬时超时 → 退到 Mock → _good 钉在 Mock 上，模型恢复了
+                        # 也永远不再用，界面从此静默降级到重启为止（今天实测踩到：重启后
+                        # 每轮都回卡包 mock 台词，看着"正常"其实根本没调模型）。
+                        if (not self.sticky_primary or i == 0) and i != len(self.chain) - 1:
                             self._good = i
                         self._dead.pop(i, None)
                     yield piece
@@ -344,6 +354,9 @@ class FallbackLLM(BaseLLM):
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 self._dead[i] = time.monotonic()
+                if os.environ.get("MIRA_LLM_DEBUG"):
+                    print(f"[llm] {provider.name} 失败（降级到下一个）: "
+                          f"{type(exc).__name__}: {exc}", flush=True)
                 if started:
                     raise LLMError(f"{provider.name} 中途失败: {exc}") from exc
                 continue
@@ -380,13 +393,17 @@ class TTSProvider:
 
     def __init__(self, voice: str = persona.CHARACTER["voice"], engine: str | None = None):
         self.voice = voice
-        # 默认档：**edge**。
-        # 为什么不是 auto（2026-10-20 实测后改的）：侧车 CosyVoice2 现在 RTF ≈ 2.8–3.0
-        # （"十点半了，你来得挺晚。" 4.5s 音频要算 12.8s，首块 3.8s），流式跟不上播放，
-        # 听感就是"说一句卡一下"；而这一阶段的验收标准是**不卡**。
-        # 音色（AI 感）回家再调：`MIRA_TTS_ENGINE=auto` 或 `neural` 就切回神经引擎，
-        # 两条路径的签名、缓存、降级链完全一致，切回去不需要改代码。
-        eng = (engine or os.environ.get(self.ENGINE_ENV) or "edge").strip().lower()
+        # 默认档：**卡说了算**（cards/mira_cafe/card.yaml → character.voice.engine）。
+        # 优先级：构造参数 > MIRA_TTS_ENGINE 环境变量 > 卡。三档都还是 neural|edge|auto，
+        # 语义不变；区别只是"默认值从哪来"。这样"换引擎/换参考音频"在卡上就有落脚点，
+        # 而不是散落在代码和启动脚本里（v9 的坑：卡里只有 edge 音色名，神经路径不读它，
+        # 所以用户听到的永远是 Xiaoxiao —— 换参考 wav 一声都听不到）。
+        # 现在 auto = 侧车在线就神经、侧车挂了/超时才 edge，另配两处配合改动（见 main.py
+        # /api/tts_stream：命中神经缓存直出 PCM；未命中先发 80ms 静音避免客户端 2s 看门狗
+        # abort 后掉回 edge）。想回「延迟优先」：MIRA_TTS_ENGINE=edge，不用改卡。
+        # 量测与代价见 docs/VOICE_NEURAL.md §5.4 / §5.6 / §7。
+        card_engine = str(getattr(persona, "VOICE_ENGINE", "") or "auto").strip().lower()
+        eng = (engine or os.environ.get(self.ENGINE_ENV) or card_engine or "auto").strip().lower()
         self.engine = eng if eng in ("auto", "neural", "edge") else "auto"
         self.last_engine = "edge"        # 上一句实际用的引擎（调试面板用）
         self.last_latency_ms = 0

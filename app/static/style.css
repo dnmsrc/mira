@@ -68,8 +68,16 @@ html, body {
    为什么单独一层：A/B 的 380ms 叠化是给「换表情/换姿势」用的（一帧→一帧），
    而连续帧要的是 80–120ms 的**硬切**；挤进同一层会被 380ms 过渡糊成鬼影，
    这正是用户说的「卡顿与闪速」。序列层自己只做「出现/消失」两次 140ms 淡入淡出。 */
-.sprite.anim { z-index: 3; transition: opacity 140ms ease; }
+/* 2026-10-21：整层出现/消失也改成硬切（原来 140ms）。原因：序列层的最后一帧和
+   交回的静态表情层是**两张不同的画**，140ms 的淡出就是 8 帧双影（探针在下游段里
+   量到 "thinking.webp + neutral.webp" 同时可见）。序列层是满幅不透明的 <img>，
+   硬切不会露出下面的静态层，不存在"漏背景"的问题。 */
+.sprite.anim { z-index: 3; transition: opacity 0ms; }
 .sprite.anim.on { opacity: 1; }
+
+/* 播帧期间藏掉 A/B 两层：序列帧是带 alpha 的贴片，底层旧姿势会从透明处透出来
+   （抬手的动作会出现两条手臂）。由 app.js 的 seqBaseShow() 开关。 */
+.stage.seqmode #charA, .stage.seqmode #charB { opacity: 0 !important; }
 
 /* 相机：作用于整个舞台（背景 + 角色一起），不重绘任何素材。
    P0-6：原来 push 1.07 / close 1.20 在「头像贴片」上等于把脸怼到镜头前（用户实测
@@ -98,24 +106,7 @@ html, body {
     linear-gradient(180deg, rgba(2,4,8,.72) 0%, rgba(2,4,8,.55) 45%, rgba(2,4,8,.94) 100%);
 }
 
-/* 雨后：不是正在下雨，所以这里不再是「雨幕」，而是玻璃上缓缓滑落的水痕。
-   真正让人听出「在店里」的是 Web Audio 合成的屋檐滴水底噪（见 app.js 的 AMB）。 */
-.rain { position: absolute; inset: -10% -10%; pointer-events: none; opacity: 0; transition: opacity 900ms ease; }
-.rain.on { opacity: .22; }
-.rain i {
-  position: absolute; top: -8%; width: 1px; height: 7%;
-  background: linear-gradient(180deg, transparent, rgba(205, 228, 255, .7), transparent);
-  animation: raindrip linear infinite;
-  filter: blur(.4px);
-}
-.rain i:nth-child(1) { left: 18%; animation-duration: 5.6s; animation-delay: -.9s; }
-.rain i:nth-child(2) { left: 47%; animation-duration: 7.2s; animation-delay: -2.1s; height: 5%; }
-.rain i:nth-child(3) { left: 79%; animation-duration: 6.4s; animation-delay: -3.4s; }
-@keyframes raindrip {
-  0%   { transform: translate3d(0, -20%, 0); opacity: 0; }
-  25%  { opacity: .9; }
-  100% { transform: translate3d(-1.5%, 140%, 0); opacity: 0; }
-}
+/* 2026-10-21：雨丝/水痕层已按用户要求移除（连同雨声底噪），这里不再有 .rain。 */
 
 /* 闪电补光 */
 .flash {
@@ -145,7 +136,7 @@ html, body {
 }
 
 /* ---------------------------------------------------------------- 演出层（静帧）
-   原来这里播 MP4（thunder / photo_reveal / last_train）。那几段是 AniSora 另开的机位，
+   原来这里播 MP4（雷电 / 特写 / 末班车那几段）。那是 AniSora 另开的机位，
    和底板的光线/景深对不上，一播就是"背景换台"；现在改成：静帧 + 缓慢推近。
    推近用 scale，不动 translate —— 和角色层一个道理，画面中心不能移。 */
 .cinema {
@@ -176,25 +167,6 @@ html, body {
 }
 .cinema-badge.show { opacity: 1; }
 .cinema.fallback img { display: none; }
-
-/* 末班车：车灯从窗外扫过。原来这是 last_train.mp4，删了视频之后改成一条光带，
-   2.6s 横穿画面右上方（窗的位置），比视频更轻，但"有东西经过窗外"读得出来。 */
-.sweep {
-  position: absolute; inset: 0; pointer-events: none; opacity: 0;
-  background: linear-gradient(105deg,
-      transparent 0%, rgba(255, 226, 178, 0) 34%,
-      rgba(255, 232, 196, .55) 47%, rgba(255, 244, 220, .85) 50%,
-      rgba(255, 232, 196, .45) 53%, transparent 68%);
-  mix-blend-mode: screen;
-  transform: translateX(-70%);
-}
-.sweep.on { animation: carsweep 2.6s cubic-bezier(.35, .05, .3, 1) forwards; }
-@keyframes carsweep {
-  0%   { opacity: 0;   transform: translateX(-72%); }
-  18%  { opacity: .95; }
-  70%  { opacity: .75; }
-  100% { opacity: 0;   transform: translateX(72%); }
-}
 
 /* ---------------------------------------------------------------- HUD */
 .hud {
@@ -287,6 +259,42 @@ html, body {
   font-size: 14px; line-height: 1.5; color: #9fb3cc;
   font-style: italic; letter-spacing: .01em;
   text-shadow: 0 1px 6px rgba(0, 0, 0, .5);
+}
+
+/* 「你说」行：把你刚说出口的那句话留在主画面上（为什么要有，见 index.html 里的说明）。
+   与她的台词必须一眼分得开：
+     - 右对齐 + 气泡（像聊天里"我发出去的那条"），她的是左对齐、无气泡；
+     - 更淡（.82 而不是 #f6f8fb）、没有发光描边 —— 描边在这里等于"像台词"；
+     - 字号 14px < 她的 17px，且带「你」前缀。
+   为什么用 max-height 过渡而不是绝对定位：.bottom 是自下而上的流式布局，
+   这条行出现时要把字幕整体往上推。给 220ms 过渡，和旁白条出现/收起同一个节奏，
+   就不会在竖屏里突然弹一下；收起后高度归零，780×1688 下 dock 不会被挤出安全区。 */
+.you-said {
+  display: flex; justify-content: flex-end;
+  margin: 0 4px;
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: opacity 220ms ease, max-height 220ms ease, margin 220ms ease;
+}
+.you-said.on { max-height: 96px; opacity: 1; margin-bottom: 8px; }
+.you-bubble {
+  display: flex; align-items: baseline; gap: 7px;
+  max-width: 88%;
+  padding: 6px 11px;
+  border-radius: 13px 13px 4px 13px;
+  background: rgba(255, 255, 255, .085);
+  border: 1px solid rgba(255, 255, 255, .10);
+}
+.you-who {
+  flex: none; font-size: 10px; line-height: 1.4; letter-spacing: .06em;
+  color: rgba(255, 255, 255, .40);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 5px; padding: 0 4px;
+}
+#youSaidText {
+  font-size: 14px; line-height: 1.5;
+  color: rgba(255, 255, 255, .82);
+  text-shadow: none;              /* 关键：不加描边，避免与她的台词同款 */
+  word-break: break-word;
 }
 
 .subtitle {
@@ -483,7 +491,7 @@ html, body {
   .subtitle { font-size: 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sprite, .char-layer, .rain i, .flash, .caret, .mic.recording .mic-ring { animation: none !important; }
+  .sprite, .char-layer, .flash, .caret, .mic.recording .mic-ring { animation: none !important; }
 }
 
 /* ------------------------------------------------------- 建议问题 / 录音状态 */
@@ -598,3 +606,74 @@ html, body {
 @media (min-width: 820px) and (max-height: 820px) {
   #app { max-width: min(600px, calc(100dvh * 0.5)); }
 }
+
+
+/* ---------------------------------------------------------------- 结局层
+   故事必须有收束画面。上盖全屏，下面是 Figma 式的暖色卡片：
+   不遮死画面（留 42% 让结局静帧透出来），让「她走了」这件事先被看见。 */
+.ending {
+  /* fixed 而不是 absolute：.ending 原来铺在 #app 那条 600px 宽的竖条里，
+     而 #app 在桌面端是 1:3.2 的窄条，9:16 的结局图 contain 进去上下必然留黑条
+     （v14 截图里 friend / stranger 两张都是中间一块图、上下两段纯黑）。
+     结局是全片的收束画面，该占满整个视口：1080×1920 与 864×1536 完全同比例，
+     contain 一下严丝合缝，一根黑边都没有。#app 上没有 transform / filter，
+     所以 fixed 不会被它裁掉。 */
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  opacity: 0; pointer-events: none;
+  transition: opacity 900ms ease;
+  background: #05070b;
+}
+.ending.show { opacity: 1; pointer-events: auto; }
+/* z-index 必须显式分层：以前 .ending 的压暗渐变写在背景里、img 又是 z-index:-1，
+   结果 img 反过来盖在父级背景之上，整层渐变压根没画出来 —— 结局文案直接压在她的
+   亮黄色雨衣上，几乎看不见（截图里那行「你们交换了名字」就是这个）。
+   现在四层：模糊底(0) < 清晰图(1) < 渐变(2) < 文案(3)。 */
+.ending-bg,
+.ending-sharp {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-position: center;
+}
+/* 铺满的模糊底：视口比 9:16 更竖时（手机 390×844、折叠屏）用它填掉上下黑边。
+   桌面 1080×1920 下清晰图正好满屏，这层被完全盖住。 */
+.ending-bg {
+  z-index: 0; object-fit: cover;
+  filter: blur(34px) saturate(.85) brightness(.42);
+  transform: scale(1.12);
+}
+/* 清晰图：contain，绝不裁人。素材是 864×1536（9:16），不要再按"16:9 横图"处理。 */
+.ending-sharp {
+  z-index: 1; object-fit: contain;
+  /* 边缘 1.2% 淡出到模糊底，手机上出现的清晰/模糊接缝就不会是一条硬边 */
+  -webkit-mask-image: linear-gradient(to bottom,
+      transparent 0, #000 1.6%, #000 98.4%, transparent 100%);
+  mask-image: linear-gradient(to bottom,
+      transparent 0, #000 1.6%, #000 98.4%, transparent 100%);
+}
+.ending::before {
+  content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: linear-gradient(to bottom,
+              rgba(2,4,8,0) 24%, rgba(2,4,8,.55) 52%, rgba(2,4,8,.95) 74%);
+}
+.ending-card {
+  position: relative; z-index: 3;
+  padding: 0 24px calc(env(safe-area-inset-bottom, 0px) + 48px);
+  display: flex; flex-direction: column; gap: 10px;
+  animation: ending-rise 900ms ease both;
+}
+@keyframes ending-rise {
+  from { transform: translateY(18px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.ending-kicker {
+  font-size: 12px; letter-spacing: .18em; color: var(--warm);
+  text-shadow: 0 1px 8px rgba(0,0,0,.8);
+}
+.ending-text {
+  font-size: 17px; line-height: 1.6; color: rgba(255,255,255,.92);
+  text-shadow: 0 1px 12px rgba(0,0,0,.9);
+  max-width: 30ch;
+}
+.ending-btn { align-self: flex-start; margin-top: 6px; }
+/* 结局之后收起输入区：还能打字会让人以为"还有下一轮" */
+body.ended .dock, body.ended .bottom, body.ended .hud { opacity: 0; pointer-events: none; transition: opacity 400ms; }

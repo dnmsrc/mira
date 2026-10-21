@@ -203,14 +203,27 @@ if (Test-Port 1234) {
 # -------------------------------------------------------------------- tts ----
 $neuralScript = Join-Path $PSScriptRoot "tools\tts\start_neural.ps1"
 $neuralPy = "C:\Users\QQ\miniconda3\envs\mira-tts\python.exe"
-# 2026-10-20: default TTS engine is now edge. The CosyVoice2 sidecar measured
-# RTF ~2.9 (first chunk 3.8s) on this box, so even its streaming path cannot keep
-# up with playback -> "she says one line, stalls, says another". Ship latency first;
-# voice quality is a separate pass. Set MIRA_TTS_ENGINE=auto to bring the sidecar back.
-$ttsEngine = if ($env:MIRA_TTS_ENGINE) { $env:MIRA_TTS_ENGINE } else { "edge" }
+# 2026-10-21 rollback: the default engine now comes from the CARD
+# (cards/mira_cafe/card.yaml -> character.voice.engine, currently "edge"), because the
+# neural path has two measured defects that are not fixed yet:
+#   1) instruct2 speaks the emotion instruction out loud as dialogue (wrong content;
+#      evidence in docs/VOICE_LEAK_2026-10-21.md)
+#   2) sidecar RTF 2.3 -> audio can never catch up with the subtitles (22s of wall
+#      time for 9.2s of speech)
+# When the card says edge, do not start the sidecar at all: it saves ~20s of startup
+# and ~2GB of VRAM (VRAM pressure also slows the 4B model, which the user reads as
+# "it got laggy"). To try neural again: $env:MIRA_TTS_ENGINE='neural' (or 'auto').
+$cardEngine = ""
+if (Test-Path $py) {
+    try {
+        $cardEngine = [string](& $py -c "from app import persona; print(getattr(persona, 'VOICE_ENGINE', '') or '')" 2>$null | Select-Object -Last 1)
+        $cardEngine = $cardEngine.Trim()
+    } catch { $cardEngine = "" }
+}
+$ttsEngine = if ($env:MIRA_TTS_ENGINE) { $env:MIRA_TTS_ENGINE } elseif ($cardEngine) { $cardEngine } else { "auto" }
 $ttsWanted = $false
 if ($ttsEngine -eq "edge") {
-    Write-Host "[mira] TTS engine = edge -> neural sidecar skipped (saves ~30s startup)"
+    Write-Host "[mira] TTS engine = edge (card or env) -> neural sidecar skipped (saves ~20s + 2GB vram)"
 } elseif (Test-Port 8790) {
     $ttsWanted = $true
 } elseif ((Test-Path $neuralScript) -and (Test-Path $neuralPy)) {
@@ -276,7 +289,11 @@ if (Test-Port 1234) {
 }
 $ttsDetail = "edge-tts fallback (robotic voice)"
 $ttsOk = $false
-if (Test-Port 8790) {
+if ($ttsEngine -eq "edge") {
+    # edge IS the intended path right now (see the rollback note above), not a fallback
+    $ttsOk = $true
+    $ttsDetail = "edge-tts (engine=edge, no sidecar)"
+} elseif (Test-Port 8790) {
     $ttsOk = $ttsReady
     if ($ttsOk) { $ttsDetail = "cosyvoice2 :8790 ready" }
     else { $ttsDetail = "cosyvoice2 :8790 still loading -> edge fallback" }
@@ -284,7 +301,7 @@ if (Test-Port 8790) {
 $comfyDetail = "off"
 if (Test-Port 8188) { $comfyDetail = "on :8188 - competes for the GPU" }
 Write-Status "model" $modelOk $modelDetail
-Write-Status "neural tts" $ttsOk $ttsDetail
+Write-Status "tts" $ttsOk $ttsDetail
 Write-Status "comfyui" (-not $gpuWarn) $comfyDetail
 if ($vramUsed -ge 0) { Write-Host ("  vram       {0} / 12282 MiB" -f $vramUsed) }
 Write-Host "  demo notes docs\DEMO_CHECKLIST.md   stop: Ctrl+C  (or .\start.ps1 -Stop)"

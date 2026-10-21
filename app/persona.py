@@ -16,11 +16,15 @@ main.py 和 providers.py 直接能用的名字。改内容请改卡，不要改�
 from __future__ import annotations
 
 import os
+import re
 
-from . import cards, decision
+from . import cards, channels, decision
 
 CARD = cards.load()
 MANIFEST = cards.manifest(CARD)
+# 表演通道仲裁器：perf 排手势、director 校正动作时都问它"此刻能不能做"。
+# 规则全在卡包里（channels / face_map / actions），这里只是把卡变成可调用对象。
+STAGE = channels.build(CARD)
 
 CARD_ID = CARD["id"]
 CARD_VERSION = CARD["version"]
@@ -30,7 +34,23 @@ CARD_VERSION = CARD["version"]
 _CH = CARD["character"]
 _SC = CARD["scene"]
 
-VOICE_NAME = _CH["voice"]["name"]
+# ------------------------------------------------ 音色（卡说走谁，代码就走谁）
+# v10 的卡把「音色」从一个 edge 名字扩成三件事（三者缺一，换引擎/换参考音频在卡上
+# 就没有落脚点——实测症状：卡里 voice.name=zh-CN-XiaoxiaoNeural，providers 的神经
+# 路径根本不读这个字段，所以换参考 wav 一声都听不到）：
+#     voice.engine  : neural | edge | auto   （MIRA_TTS_ENGINE 环境变量仍然优先）
+#     voice.edge    : {name, rate, pitch, volume}   edge 链路用
+#     voice.neural  : {ref, ref_sha1, prompt_text, speed}   神经侧车/缓存 key 用
+# 向后兼容：v9 及以前的扁平写法 voice.name/rate/pitch/volume 仍然有效，等价于 voice.edge.*
+_VOICE = _CH["voice"]
+_V_EDGE = dict(_VOICE.get("edge") or {})
+for _k in ("name", "rate", "pitch", "volume"):
+    if _k not in _V_EDGE and _k in _VOICE:
+        _V_EDGE[_k] = _VOICE[_k]
+VOICE_EDGE = _V_EDGE
+VOICE_NAME = str(_V_EDGE.get("name") or "")
+VOICE_ENGINE = str(_VOICE.get("engine") or "auto").strip().lower()
+VOICE_NEURAL = dict(_VOICE.get("neural") or {})
 
 CHARACTER = {
     "name": _CH["name"],
@@ -38,7 +58,9 @@ CHARACTER = {
     "job": _CH["job"],
     "look": " ".join(str(_CH["look"]).split()),
     "temperament": _CH["temperament"],
-    "voice": VOICE_NAME,
+    "voice": VOICE_NAME,          # 兼容：各处仍把它当 edge 音色名用（health/调试面板）
+    "voice_engine": VOICE_ENGINE,
+    "voice_neural": VOICE_NEURAL,
     "secret": " ".join(str(_CH["secret"]).split()),
     "facts": _CH["facts"],
     "boundaries": _CH["boundaries"],
@@ -56,6 +78,83 @@ SCENE = {
 }
 
 BEATS = CARD["beats"]
+# v14：卡里的 beats 是由 story.nodes 派生的（见 cards._derive_beats），
+# 表演层仍按「第几拍」工作。这张表让 story 的 node_id 能同步回 beat 索引。
+NODE_TO_BEAT = {b["id"]: i for i, b in enumerate(BEATS)}
+
+# 节点全表（含 ending_leave 这类 clock: "any" 的旁路节点——它们不在 BEATS 里，
+# 但「这一轮该建议玩家说什么」是按**节点**算的，不能只看拍序号）。
+NODES: dict[str, dict] = {n["id"]: n for n in (CARD.get("story") or {}).get("nodes") or []}
+# 主线节点顺序（去掉旁路节点）：给 --selftest / 观测面板按剧情顺序遍历用。
+STORY_ORDER: list[str] = [n["id"] for n in (CARD.get("story") or {}).get("nodes") or []
+                          if n.get("clock") != "any"]
+
+
+def node_for(node_id: str, beat: int = 0) -> dict:
+    """按节点 id 取节点数据；取不到才回落到「拍」的数据（老卡包只有 beats）。"""
+    return NODES.get(node_id or "") or BEATS[max(0, min(beat, len(BEATS) - 1))]
+
+
+def advance_keywords(node: dict) -> list[str]:
+    """当前节点靠哪些**用户说的话**能提前跳转（goto[*].when.ask_any）。
+
+    这是「快速对话的推进项」和「贴题证据」两个功能的同一个数据源：
+    卡包作者已经写下了「说这句话就会推进剧情」，程序不需要再猜。
+    """
+    out: list[str] = []
+    for g in node.get("goto") or []:
+        for kw in ((g.get("when") or {}).get("ask_any") or []):
+            kw = str(kw or "").strip()
+            if kw and kw not in out:
+                out.append(kw)
+    return out
+
+
+def _ask_to_line(ask: str) -> str:
+    """把卡里的 ask 描述（「问你在等人吗」/「说外面在下雨」）还原成玩家会说的一句话。
+
+    ask 的写法统一是「问…」或「说…」+ 一句自然中文，所以去掉前导动词就能直接
+    当建议句用（问 → 问号结尾，说 → 句号结尾）。这比在代码里另写一套建议句可靠：
+    换卡即换建议，且和节点语义天然一致。
+    """
+    t = str(ask or "").strip()
+    for verb in ("问对方", "问她", "问我", "问", "说"):
+        if t.startswith(verb):
+            body = t[len(verb):].strip()
+            if not body:
+                break
+            body = body.rstrip("。！？!?，,")
+            return body + ("？" if verb.startswith("问") else "。")
+    return t
+
+
+def must_hit_phrases(node: dict, limit: int = 4) -> list[str]:
+    """本轮「必须点到」的候选物：节点 ask 里的具体说法（给提示词 / 出口校验共用）。
+
+    为什么从 ask 取而不是从 goal 取：goal 是作者写给导演看的一句话（「你松口承认
+    在等人」），ask 是**玩家会问的那件事**（「问你在等人吗」），后者才是「听见了吗」
+    的判据。去掉「问/说」和句末语气词之后剩下的，就是可机检的短语。
+    """
+    out: list[str] = []
+    for a in node.get("ask") or []:
+        line = _ask_to_line(str(a))
+        line = line.rstrip("？?。！!，,")
+        if line and line not in out:
+            out.append(line)
+    return out[:limit]
+
+# 旁路节点（clock: "any"，如 ending_leave）按设计不进 BEATS——它不在线性推进里，
+# 混进去会把「下一拍」的语义搞乱。但它一样要有「这一拍长什么样」：否则用户说
+# 「我先走了」时 beat 停在上一节点，结局演的是上一句的动作和情绪。
+# 按结局种类映射到同结局的主线节点，动作/情绪/建议全都复用那一套。
+_last_beat = len(BEATS) - 1
+for _n in (CARD.get("story") or {}).get("nodes") or []:
+    if _n.get("id") in NODE_TO_BEAT:
+        continue
+    _kind = _n.get("ending")
+    NODE_TO_BEAT[_n["id"]] = (
+        NODE_TO_BEAT.get(f"ending_{_kind}", _last_beat) if _kind else _last_beat
+    )
 
 # 台词二次校正规则（问题 6 · 方案乙）：卡包里的数据，逻辑在 director.dialog_fix。
 # 放这里而不是硬编码进 py，是为了"规则可写、可审、可回滚"——改完不用动代码。
@@ -65,7 +164,7 @@ DIALOG_FIX_RULES: list[dict] = list(CARD.get("dialog_fix") or [])
 def _brief(say: str) -> str:
     """一条事实压成一句话：只留能被追问的那个具体物件/数字。
 
-    为什么需要：4B 会把「说好十点半」编成「七点半末班车」，不是因为它想编，
+    为什么需要：4B 会把「说好八点半」编成「从早上七点开始等了四个半小时」，不是因为它想编，
     是因为它手里没有可用的具体锚点，只能从最近见过的词里抓一个凑。
     给一张短事实表，它就有东西可给；不给，它就只能造。
     """
@@ -150,7 +249,7 @@ def beat_jump(beat: int, user_text: str) -> int:
       1) 子串匹配没有语义。「我等了一个小时」里没有「等多久」，不跳；
          「你对咖啡怎么看」里有「咖啡」，跳到咖啡拍——全是运气。
       2) 它只能回答「跳不跳」，回答不了「跳到哪」。剧情骨架是线性的，
-         用户一进来就问照片，角色要么硬挡、要么直接念第 4 拍，中间全塌。
+         用户一进来就问「她是不是不来了」，角色要么硬挡、要么直接念最后一拍，中间全塌。
 
     现在这一跳是一个**决策模型的选择题**（app/decision.py，形态同 TypeSafe 的 Jev）：
     选项 = 从当前拍到最后的每一拍，判据 = 那一拍玩家会说的话（卡包的 suggest），
@@ -268,44 +367,184 @@ def beat_advance(beat: int, turns_in_beat: int, hits: int = 0, event: str = "non
     return hits >= min_hits
 
 
-def suggestions(beat: int, anchors: tuple[str, ...] = ()) -> list[str]:
-    """按当前拍 + 本轮话题生成 3 条建议（P0-3）。
+def _clean(line: object) -> str:
+    return " ".join(str(line or "").split()).strip()
 
-    以前是卡包里每组固定 3 句，整场不变——用户实测「根本不知道说什么」，
-    因为它既不对应当前聊到哪，也没有一条能把戏往前推。
-    现在三条各有职责：
-      1) 深入当前话题：优先和本轮锚点同字的那句（说明刚聊到这件事）
-      2) 推进剧情：下一拍的建议句（问出来就会把剧情推到下一拍）
-      3) 关心她 / 换角度：当前拍还没用到的句子
-    数据仍全部来自卡包（BEATS[i].suggest），换卡即换建议，代码里不写死剧情。
+
+# 内容二元组用的虚词表：两个字都是虚词时不算「内容」。只用来算「这句话和那句话
+# 是不是在说同一件事」，不追求分词精度——漏判只会让建议里多一句安全的话。
+_STOP_CHARS = set(
+    "的了着过是在有和与就不都也还又很太更最我你他她它们这那个么吗呢吧啊呀哦嗯额呃唔诶"
+    "一二三四五六七八九十一上下里外去来说做要会能可对把被给让从到为以而且但所以如果"
+    "将已经没多少点时候现在知道觉得可能应该什么怎么为什么一样这样那样就是不是")
+
+
+def _tokens(text: str) -> set[str]:
+    """中文内容二元组（虚词二元组丢掉）。给「相关/不相关」做粗判，纯函数。"""
+    out: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text or ""):
+        for i in range(len(run) - 1):
+            a, b = run[i], run[i + 1]
+            if a in _STOP_CHARS and b in _STOP_CHARS:
+                continue
+            out.add(run[i:i + 2])
+    return out
+
+
+def _synth_ask_line(kw: str) -> str:
+    """兜底：用一个 goto 触发词造一句最短的自然中文（真的包含该词）。
+
+    正常路径用不到它——卡包里每个 ask_any 触发词都能在目标节点的 suggest 里找到
+    对应的一句玩家台词（作者已经写好）。这里只是保证「推进项永远存在且真的能跳」，
+    不给作者留"忘写 suggest 就推不动剧情"的坑。
     """
-    n = len(BEATS)
-    cur = [s for s in (BEATS[max(0, min(beat, n - 1))].get("suggest") or []) if s]
-    nxt = [s for s in (BEATS[min(beat + 1, n - 1)].get("suggest") or []) if s]
+    kw = _clean(kw)
+    if not kw:
+        return ""
+    if kw.startswith("你"):
+        return f"{kw}？"
+    return f"你{kw}？"
+
+
+def _advance_suggestion(node: dict) -> tuple[str, str]:
+    """「推进剧情」那一条：点下去真的能把当前节点推到下一个节点。
+
+    数据全部来自卡包：goto[*].when.ask_any 是作者写下的**剧情加速关键词**，
+    目标节点的 suggest 是"玩家在那个节点会说的话"。优先用作者原句，
+    因为它是自然中文、且天然包含触发词；实在没有才用关键词现造一句。
+    返回 (建议句, 人话说明)。
+    """
+    for g in node.get("goto") or []:
+        kws = [_clean(k) for k in ((g.get("when") or {}).get("ask_any") or []) if _clean(k)]
+        if not kws:
+            continue
+        target = NODES.get(_clean(g.get("to"))) or {}
+        for s in (_clean(x) for x in target.get("suggest") or []):
+            if not s or s.startswith(("（", "(")):
+                continue          # 「（别说话，等她）」是选项不是台词，不能当推进项
+            hit = next((k for k in kws if k in s), "")
+            if hit:
+                return s, f"推进到 {target.get('id')}（含触发词「{hit}」）"
+        for a in (_ask_to_line(x) for x in target.get("ask") or []):
+            hit = next((k for k in kws if k in a), "")
+            if a and hit:
+                return a, f"推进到 {target.get('id')}（含触发词「{hit}」）"
+        line = _synth_ask_line(kws[0])
+        if line:
+            return line, f"推进到 {target.get('id') or '下一节点'}（触发词「{kws[0]}」）"
+    # 没有 ask_any 分支：这个节点靠轮次/时钟自动推进，所以给「下一节点玩家会说的话」
+    for g in node.get("goto") or []:
+        target = NODES.get(_clean(g.get("to"))) or {}
+        for s in (_clean(x) for x in target.get("suggest") or []):
+            if s and not s.startswith(("（", "(")):
+                return s, f"推进到 {target.get('id')}（按轮次推进，先说到那边的事）"
+    return "", ""
+
+
+def _ending_suggestions(node: dict, turn: int) -> list[str]:
+    """结局节点的三条：都是「道别/收尾」类，不能出现推进剧情的问句。"""
+    sugs = [_clean(x) for x in node.get("suggest") or [] if _clean(x)]
     out: list[str] = []
-    for s in cur:
-        if s not in out and any(a and a in s for a in anchors):
-            out.append(s)
+    pool: list[str] = list(sugs)
+    farewell = ["路上小心。", "那我先走了。", "再见。"]
+    if node.get("id") == "ending_leave":
+        out.append("我先走了。")          # 用户主动要走：第一条点下去就是结局
+        pool = [p for p in pool if "先走" not in p]
+        farewell = [p for p in farewell if "先走" not in p]
+    pool = pool + [f for f in farewell if f not in pool]
+    for i in range(len(pool)):
+        cand = pool[(int(turn) + i) % len(pool)]
+        if cand and cand not in out:
+            out.append(cand)
+        if len(out) >= 3:
             break
-    if not out and cur:
-        out.append(cur[0])
-    for s in nxt:
-        if len(out) < 3 and s not in out:
-            out.append(s)
-            break
-    for s in cur + nxt:
-        if len(out) < 3 and s not in out:
-            out.append(s)
-            break
-    for f in ("你还好吗？", "……（不说话，看着她）", "这家店你常来吗？"):
-        if len(out) < 3:
-            out.append(f)
     return out[:3]
 
 
-def beat_suggestions(beat: int) -> list[str]:
-    beat = max(0, min(beat, len(BEATS) - 1))
-    return list(BEATS[beat].get("suggest") or [])
+def suggestions_for_node(story_state: object = None, node_id: str = "",
+                         turn_in_node: int = 0, last_user: str = "",
+                         last_reply: str = "") -> list[str]:
+    """快速对话的三条建议：按**当前故事节点**实时生成，且每轮都不一样。
+
+    为什么重写（用户问题 6：「快速对话不应该是几个固定的选项，它应该根据每轮对话
+    与当前所属故事节点实时改变，有着推动剧情发展的功能」）：
+    上一版按「第几拍」从 BEATS[i].suggest 取固定三句，同一节点连坐几轮给的是
+    一模一样的三条，而且没有一条能把戏往前推——用户点了两句就得自己打字。
+
+    现在三条各有职责（数据全在卡包 story.nodes 里，换卡即换建议，代码不写死剧情）：
+      1) 接住当前话题 —— 节点 suggest 里和「他上一句 / 她上一句」最相关的那句；
+      2) **推进剧情**   —— 当前节点 goto 的 ask_any 触发词 → 目标节点 suggest 里
+                          天然包含触发词的那句（点下去真的会跳节点）；
+      3) 关心 / 换角度 —— 本节点还没用过的 suggest（用完就用 ask 还原的玩家问句）。
+    三条按 turn_in_node 轮换，同一节点连着两轮不会给出一模一样的三条。
+
+    纯函数：不调模型、不读文件、0 延迟；同一个输入永远得到同样的三条（可单测）。
+    story_state 只用来在 node_id 缺省时补一个当前节点（读属性，不修改它）。
+    """
+    nid = _clean(node_id) or _clean(getattr(story_state, "node_id", ""))
+    if not nid:
+        nid = STORY_ORDER[0] if STORY_ORDER else (BEATS[0]["id"] if BEATS else "")
+    node = NODES.get(nid)
+    if node is None:
+        # 老卡包（只有 beats）：退回拍数据，形状兼容
+        node = BEATS[max(0, min(int(turn_in_node or 0), max(0, len(BEATS) - 1)))]
+    turn = max(0, int(turn_in_node or 0))
+    if node.get("ending"):
+        return _ending_suggestions(node, turn)
+    sugs = [_clean(x) for x in node.get("suggest") or [] if _clean(x)]
+    out: list[str] = []
+
+    # 2) 先定推进项：它决定了另外两条不能重复哪一句
+    advance, advance_why = _advance_suggestion(node)
+    if advance:
+        out.append(advance)
+
+    # 1) 接住当前话题：和他刚说的 / 她刚说的最相关的一句
+    hay = " ".join(x for x in (_clean(last_user), _clean(last_reply)) if x)
+    toks = _tokens(hay)
+    topic = ""
+    if toks:
+        best_score = 0
+        for s in sugs:
+            if s in out:
+                continue
+            sc = len(toks & _tokens(s))
+            if sc > best_score:
+                topic, best_score = s, sc
+    if not topic:
+        pool = [s for s in sugs if s not in out]
+        if pool:
+            topic = pool[turn % len(pool)]
+    if topic and topic not in out:
+        out.insert(0, topic)
+
+    # 3) 关心 / 换角度：本节点还没用过的 suggest；用完了就用 ask 还原的玩家问句
+    care_pool = [s for s in sugs if s not in out]
+    if not care_pool:
+        care_pool = [_ask_to_line(a) for a in node.get("ask") or []
+                     if _ask_to_line(a) and _ask_to_line(a) not in out]
+    if care_pool:
+        out.append(_sug_pick(care_pool, turn))
+
+    # 节点自带数据不够三条时：用后面节点作者写的玩家台词补（仍然随节点变化）
+    if len(out) < 3:
+        for later in STORY_ORDER[STORY_ORDER.index(nid) + 1:] if nid in STORY_ORDER else []:
+            for s in (_clean(x) for x in (NODES.get(later) or {}).get("suggest") or []):
+                if s and s not in out and len(out) < 3:
+                    out.append(s)
+            if len(out) >= 3:
+                break
+    for fb in ("你还好吗？", "……（不说话，看着她）", "这家店你常来吗？"):
+        if len(out) < 3 and fb not in out:
+            out.append(fb)
+    return out[:3]
+
+
+def _sug_pick(pool: list[str], turn: int) -> str:
+    """按轮次轮换着取一句：同一节点连着两轮不会给同一句。"""
+    if not pool:
+        return ""
+    return pool[int(turn) % len(pool)]
 
 
 def beat_goal(beat: int) -> dict:
@@ -335,7 +574,7 @@ _SYSTEM = """你在一场实时语音对话里扮演 {name}——{age} 岁的{jo
 1. 先回答，再延伸。对方问什么，第一句必须**针对那个问题**做出反应：
    - 知道的就正面回答，给具体的东西（物件、时间、数字）；
    - 不想说、不能说的，就**点着那件事**挡回去：先提到他问的东西，再说挡的话
-     （「号码？……不给。」「找他？……不知道他在哪。」「照片……现在不拿出来。」）；
+     （「号码？……不给。」「她在哪？……我不知道，联系不上。」「手机……没电了，从七点开始。」）；
    - **挡也要挡对题。** 不允许只甩一句「不是。」「不说这个。」，更不允许用一句
      天气、景物或比喻来代替回答——在用户听来那就是没听见他说话。
      上一版就是在这里坏的：对方问「你在等谁」，她答「这雨好像下得挺久的」——
@@ -354,7 +593,7 @@ _SYSTEM = """你在一场实时语音对话里扮演 {name}——{age} 岁的{jo
    绝对不要用"你刚进来吧"这种空话糊过去，也不要编。
 6. 你最近说过的话在下面【导演提示】里。再被问到同一件事必须换一种说法，
    每轮给一个**新的具体信息**（新物件、时间、动作或态度）。
-   「雨 / 灯 / 等 / 照片」这些词不要每轮都出现。
+   「雨 / 灯 / 等 / 小雪 / 手机没电」这些词不要每轮都出现。
 7. 对方聊和你无关的事（手机没电、加班、堵车）就正常接，不要硬拐回你的心事。
 8. 反问**只在【导演提示】明确要求那一轮才做**（那里会直接给你要问的话头）。
    没被要求就不要用问句结尾——答完就收住。实测 4B 最爱在答完之后补半句
@@ -367,6 +606,11 @@ _SYSTEM = """你在一场实时语音对话里扮演 {name}——{age} 岁的{jo
 11. 对方只打招呼（你好／嗨／在吗／晚上好）时，就回一句招呼或让他坐：
     「嗯。」「你好。」「……坐吧。」「这么湿，先坐吧。」——不要拿天气当回答，不要报时间，
     不要反问他，一句就够。
+12. **每一轮都要接住对方这句话。** 【导演提示】最后一行会写出「这一轮要回应的话题」，
+    那是给你看的提示，**绝对不要照着念、也不要把它列出来**。要用你自己的话给出一个
+    具体反应（时间/物件/人/动作），否则在观众听来就是你根本没听见他说话。
+    宁可短，也不许用「嗯」「是啊」「我不知道」这种空话把这一轮糊过去——那是答非所问。
+    也不能用「我没听清」「玻璃太厚」这类现场编的理由代替回答。
 
 【输出格式】
 第一行必须是 JSON 对象（不要代码块、不要任何前缀），换行之后才是你要说的话。
@@ -394,15 +638,21 @@ _DYNAMIC = """
 这一拍绝对不要说的：{forbid}
 已经说过 / 对方已经知道：{ledger}
 你最近说过的台词（不要重复，换个说法）：{recent}
+这一轮要回应的话题（用你自己的话，别念这一行）：{must_hit}
 """
 
 
 def render_system_prompt(beat: int = 0, ledger: str = "（刚开始，对方什么都不知道）",
-                         recent: str = "（还没有说过话）", plan_block: str = "") -> str:
+                         recent: str = "（还没有说过话）", plan_block: str = "",
+                         must_hit: str = "") -> str:
     """拼本轮提示词：固定前缀（可命中 KV cache）+ 动态尾巴 + 导演层的本轮指令。
 
     plan_block 放在**最末尾**是有意的：4B 对末尾指令的服从率明显高于开头，
     而 prefix cache 只要求「前缀不变」，把每轮变的内容都压在尾段正好两全。
+
+    must_hit（问题 4）：当前节点 ask 锚点里的具体物，写在动态段最后一行——
+    它是「这一轮要回应的话题」的机检口径，和 main.py 的 topic_gate 用同一份数据。
+    空字符串时写「（按他刚问的那件事答）」，保证提示词形状稳定（前缀缓存不受影响）。
     """
     beat = max(0, min(beat, len(BEATS) - 1))
     b = BEATS[beat]
@@ -431,6 +681,7 @@ def render_system_prompt(beat: int = 0, ledger: str = "（刚开始，对方什�
         forbid=b["forbid"],
         ledger=ledger,
         recent=recent,
+        must_hit=must_hit or "（按他刚问的那件事答，把他的原话里的一个词说出来）",
     )
     if plan_block:
         tail = tail + "\n" + plan_block.strip() + "\n"

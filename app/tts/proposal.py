@@ -72,17 +72,27 @@ def _safe_unlink(p: Path) -> None:
 
 async def _synth_clause(text: str, voice: str, rate: str, pitch: str, volume: str,
                         out: Path, timeout: float) -> Path:
+    """合成一个小句。**失败重试一次**：edge 云端现在会偶发返回空音频
+    （`NoAudioReceived`，同一句同样的参数，12:2x 实测串行三次全失败、紧接着并发三次全成功），
+    而一次失败会让整句退回「单句整发」、再失败就只剩字幕。多付一次连接很便宜，
+    这里只重试、不改任何参数，所以不会让「内容/音色」变得不可预测。
+    """
     tmp = out.with_suffix(".part.mp3")
-    try:
-        comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
-        await asyncio.wait_for(comm.save(str(tmp)), timeout=timeout)
-        if not tmp.exists() or tmp.stat().st_size < 400:
-            raise TTSError(f"小句合成输出为空：{text[:12]}")
-        tmp.replace(out)
-        return out
-    except Exception:
-        _safe_unlink(tmp)
-        raise
+    last: Exception | None = None
+    for attempt in range(2):
+        try:
+            comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
+            await asyncio.wait_for(comm.save(str(tmp)), timeout=timeout)
+            if not tmp.exists() or tmp.stat().st_size < 400:
+                raise TTSError(f"小句合成输出为空：{text[:12]}")
+            tmp.replace(out)
+            return out
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            _safe_unlink(tmp)
+            if attempt == 0:
+                await asyncio.sleep(0.35)
+    raise last  # type: ignore[misc]
 
 
 async def synth(
@@ -161,8 +171,12 @@ async def synth(
             breaths=[c.breath for c in clauses],
             intro_breath=shape["breath"] if use_whole else 0.35,
         )
-        y = pp.finalize(y, wet=shape["wet"], dull=True,
-                        room_tone_db=-58.0, target_rms_db=-20.0)
+        # 2026-10-21 13:4x 全干：用户听完 B 档后反馈「有回音」。回音就是这一步的 0.55s
+        # 房间卷积（wet 0.16，wet 越大尾巴越明显）；低通/底噪一起关掉——房间尾 + 8.2k 低通
+        # + -58dB 底噪三段叠起来是「录音棚里的朗读」，不是「隔着桌子说话」。
+        # wet 现在由 prosody.EMOTION_SHAPE 给（全部 0.0），想加回房间只改那一处。
+        y = pp.finalize(y, wet=shape["wet"], dull=False,
+                        room_tone_db=None, target_rms_db=-20.0)
         tmp_out = out.with_suffix(".part.mp3")
         pp.write_mp3(y, tmp_out, 44100, 96000)
         tmp_out.replace(out)
