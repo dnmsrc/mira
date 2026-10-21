@@ -1492,8 +1492,7 @@ function streamReset(seq) {
 }
 
 /* 共用一个 AudioContext + Analyser：既给"说话起伏"供包络，也避免多个上下文。 */
-function audioCtx() {
-  if (!AMP.ctx) {
+function audioCtx() {  if (!AMP.ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     AMP.ctx = new AC();
@@ -1508,6 +1507,105 @@ function audioCtx() {
     ampLoop();
   }
   return AMP.ctx;
+}
+
+/* ---- 流式 PCM 的房间混响（把"第一句"的听感拉回和后几句一致）--------------------
+   整句 mp3 那条路的混响是**服务端** DSP 加的：postprocess.make_room_ir 生成 0.55s
+   小房间 IR（6 个早期反射 11/17/23/29/37/47ms + 指数衰减扩散尾），finalize 里按
+   情绪把湿声混到干声 RMS 的 16%–20%，再过一级 8.2kHz 低通。
+   流式路径是逐块合成，服务端拿不到整句做卷积——所以在客户端用 ConvolverNode 补同一套
+   IR，参数按上面的口径复刻（湿声能量归一化到干声的 0.16，干声 ×0.96）。
+   为什么必须补：不补的话第一句明显比后面几句"干"、像贴着脸说话，切换点会被听出来；
+   播放器本来就走 WebAudio 时间线，加这一层不增加任何等待时间。
+   注意：这条 bus 只接流式 PCM；整句 mp3（自带服务端混响）不经过它，避免双重混响。 */
+const ROOM = { inp: null, gain: null, dry: null, conv: null, wet: null, lp: null, ready: false };
+
+/* 流式 PCM 的级别补偿（-18.8dB）。
+   为什么需要：edge 的裸音频几乎是满刻度（实测 RMS ≈ -1.8dBFS），而整句 mp3 那条路
+   在服务端 postprocess.finalize 里被归一化到 **-20dBFS**。两边差 18.7dB —— 不补的话
+   第一句会明显比后面几句响一大截，切换点比没有混响更容易被听出来。
+   取值依据：tools/tts/render_ab_reverb.py 实测 delta = 18.66dB（同文本同音色）。
+   这是固定值：服务端是逐句归一化，所以句与句之间仍有 ±2dB 浮动（见文档 §6）。 */
+const ROOM_GAIN = 0.115;
+
+/* 流式 PCM 的**音色**补偿（-10dB @ 3kHz 高架）。
+   为什么需要（2026-10-21 08:1x 同文本实测，tools/tts 外的新证据在 docs/review/p4_verify/）：
+   同一句台词分别走两条路 —— `/api/tts_file`（整句 mp3 + 服务端 postprocess）与
+   `/api/tts_stream`（live 长连，裸 PCM）—— 拿到音频后按 1/3 倍频程比较长时谱，
+   两条的**频谱倾斜差了 4.7dB/oct**（-8.14 vs -3.45），折算成带内差：
+   1–3k +2.4dB、3–5k +6.7、5–7k +11.3、7–9k +12.9、9–11k +15.5。
+   也就是说：第一句明显比后面几句**亮/脆**，而服务端 DSP 那条路被压得很暗。
+   一条回复里第一句亮、第二句起发闷，比"整体偏闷"更容易被听出来（切换点）。
+   这里用一级 high-shelf 把流式路径压到与 DSP 路径同谱：实测带内残差从
+   +15.5dB 收到 ±3.3dB（1–9kHz，见同目录 timbre_match 的两个 wav 与报告 §6）。
+   另一个方向（把 DSP 那条路提亮）会改动所有句子的音色，属于"音色归用户判断"的范围，
+   所以默认不动它；要试就在 postprocess.finalize 里放宽低通/去掉 dulling。 */
+const ROOM_SHELF = { f: 3000, gainDb: -10 };
+
+/* 按 postprocess.make_room_ir 的口径生成 IR，并按能量归一化到指定湿声比例。 */
+function makeRoomIR(ctx, wet) {
+  const sr = ctx.sampleRate;
+  const n = Math.max(1, Math.round(sr * 0.55));
+  const buf = ctx.createBuffer(1, n, sr);
+  const ch = buf.getChannelData(0);
+  for (const [ms, g] of [[11, 0.26], [17, 0.20], [23, 0.15], [29, 0.11], [37, 0.08], [47, 0.05]]) {
+    const i = Math.round((sr * ms) / 1000);
+    if (i < n) ch[i] += g;
+  }
+  // 扩散尾：白噪声 × 指数衰减，再做一阶低通（≈3.2kHz）去掉"嘶"的高频
+  const a = Math.exp((-2 * Math.PI * 3200) / sr);
+  let lp = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    lp = (1 - a) * (Math.random() * 2 - 1) + a * lp;
+    ch[i] += lp * 0.30 * Math.exp(-t / 0.17);
+  }
+  // 能量归一：卷积输出的 RMS ≈ 输入 RMS × ||ir||₂，把 ||ir||₂ 归到 wet
+  let e = 0;
+  for (let i = 0; i < n; i++) e += ch[i] * ch[i];
+  e = Math.sqrt(e) || 1;
+  const k = wet / e;
+  for (let i = 0; i < n; i++) ch[i] *= k;
+  return buf;
+}
+
+function roomBus() {
+  const ctx = audioCtx();
+  if (!ctx) return null;
+  if (ROOM.ready) return ROOM.inp;
+  try {
+    ROOM.inp = ctx.createGain();
+    ROOM.gain = ctx.createGain();
+    ROOM.dry = ctx.createGain();
+    ROOM.wet = ctx.createGain();
+    ROOM.lp = ctx.createBiquadFilter();
+    ROOM.shelf = ctx.createBiquadFilter();
+    ROOM.conv = ctx.createConvolver();
+    ROOM.gain.gain.value = ROOM_GAIN;        // 与整句 mp3 的 -20dBFS 对齐
+    ROOM.dry.gain.value = 1 - 0.25 * 0.16;   // 与 finalize 的 x*(1-0.25*wet) 同口径
+    ROOM.wet.gain.value = 1.0;
+    ROOM.lp.type = "lowpass";
+    ROOM.lp.frequency.value = 8200;          // finalize 的 high-frequency dulling
+    ROOM.shelf.type = "highshelf";
+    ROOM.shelf.frequency.value = ROOM_SHELF.f;
+    ROOM.shelf.gain.value = ROOM_SHELF.gainDb;   // 与整句 mp3 同谱（见 ROOM_SHELF 注释）
+    ROOM.conv.normalize = false;             // IR 已经按能量归一，别让浏览器再缩一次
+    ROOM.conv.buffer = makeRoomIR(ctx, 0.16);
+    ROOM.inp.connect(ROOM.gain);
+    ROOM.gain.connect(ROOM.dry);
+    ROOM.gain.connect(ROOM.conv);
+    ROOM.conv.connect(ROOM.wet);
+    ROOM.dry.connect(ROOM.lp);
+    ROOM.wet.connect(ROOM.lp);
+    ROOM.lp.connect(ROOM.shelf);
+    ROOM.shelf.connect(AMP.an);
+    ROOM.ready = true;
+  } catch (e) {
+    /* 建不起来就退回直连（听感差点，但别哑） */
+    ROOM.ready = false;
+    return null;
+  }
+  return ROOM.inp;
 }
 
 function enqueueStream(url, text, index, estMs) {
@@ -1613,7 +1711,8 @@ async function playStreamItem(item) {
       for (let i = 0; i < n; i++) ch[i] = pcm[i] / 32768;
       const src = ctx.createBufferSource();
       src.buffer = buf;
-      src.connect(AMP.an);
+      const bus = roomBus();       // 走混响 bus（客户端补的 0.55s 小房间，见 roomBus）
+      src.connect(bus || AMP.an);
       const at = Math.max(STREAM.endTime, ctx.currentTime + 0.03);
       src.start(at);
       STREAM.sources.push(src);
@@ -1679,6 +1778,10 @@ function stopPlayback() {
   ampDetach();
   if (S.playing) {
     try {
+      /* onplaying 也必须清：play() 是异步的，打断瞬间那一句的 onplaying 可能还没触发。
+         不清它的话，stopPlayback() 之后它照样会跑一遍 setCaption(item.text)，
+         于是屏幕上残留一句「嗯……」（用户报的就是这个）。 */
+      S.playing.onplaying = null;
       S.playing.onended = null;
       S.playing.onerror = null;
       S.playing.pause();
@@ -1686,6 +1789,8 @@ function stopPlayback() {
     } catch (e) {}
     S.playing = null;
   }
+  clearTimeout(S.streamWaitT);
+  S.streamWaitT = 0;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 }
 
@@ -1703,7 +1808,17 @@ function enqueueAudio(url, text, index) {
     item.audio = null;
   }
   S.queue.push(item);
-  if (!S.playing) playNext();
+  if (!S.playing) playNext(S.activeSeq);
+}
+
+/* 流式那条路是不是还在占着音频时间线。
+   为什么需要：MIRA_TTS_LIVE=first 时第一句走流式 PCM、后面几句走整句 mp3，
+   两条播放路径各有一套队列；mp3 一旦入队就立刻 play()，会和还在排期的流式 PCM
+   叠在一起（听感就是两句同时在说）。让 mp3 等到流式时间线排空再起播即可。 */
+function streamDraining() {
+  if (STREAM.busy || STREAM.items.length) return true;
+  const ctx = AMP.ctx;
+  return !!(ctx && STREAM.endTime - ctx.currentTime > 0.05);
 }
 
 function playNext(seq) {
@@ -1727,6 +1842,12 @@ function playNext(seq) {
 
   const begin = () => {
     if (seq !== undefined && seq !== S.activeSeq) return;
+    // 流式 PCM 还在时间线上排着：等它播完再起 mp3，否则两条播放路径会叠音。
+    // 上限 10s：一句最长约 8s，真卡住也不能让整轮哑掉（到点就直接播 mp3）。
+    if (streamDraining() && Date.now() - (begin._t0 || (begin._t0 = Date.now())) < 10000) {
+      S.streamWaitT = setTimeout(begin, 60);
+      return;
+    }
     audio.play().catch(() => {
       setCaption(item.text, false);
       S.playing = null;

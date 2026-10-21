@@ -49,29 +49,84 @@ WHISPER_SIZE = os.environ.get("WHISPER_SIZE", "small")
 PRESET_ACTS = frozenset({"greeting", "ack", "thanks", "bye", "silence", "meta", "personal"})
 
 # ---- 流式 TTS ---------------------------------------------------------------
-# 侧车（tools/tts/serve_neural.py）逐块吐裸 PCM；服务端只做同源转发，浏览器边到边放。
-# 非流式（整句合成完再返回）在这张 4070S 上一句要 3–6s，交互里等于"她卡住了"，
-# 所以只要侧车活着就走流式；侧车挂了自动回到原来的 mp3 整句路径。
+# 两条音源，同一个 audio/L16 24000 单声道契约，客户端播放器不区分：
+#   live     edge-tts 长连（app/tts/live_edge.py）：一次握手 ≈850ms 只付一次，
+#            之后每句「发 SSML → 首块」≈230–320ms，边收 mp3 边解码成 PCM 就能播。
+#   neural   侧车（tools/tts/serve_neural.py）逐块吐 PCM，服务端同源转发。
+# 非流式（整句合成完再返回）在 edge 云端一句要 1.4–2.2s，交互里等于"她卡住了"。
+# 开关：MIRA_TTS_LIVE=1|first|0（见 app/tts/live_edge.py:live_mode），
+#       MIRA_TTS_STREAM=0 / edge 是更粗暴的总开关（强制整句 mp3）。
 NEURAL_TTS_URL = os.environ.get("NEURAL_TTS_URL", "http://127.0.0.1:8790")
 TTS_STREAM_MODE = os.environ.get("MIRA_TTS_STREAM", "auto").lower()
 
 
-def stream_tts_enabled() -> bool:
-    if TTS_STREAM_MODE in ("0", "off", "false", "edge", "mp3"):
-        return False
-    if TTS_STREAM_MODE in ("1", "on", "true", "neural"):
-        return True
-    # auto：**跟着当前 TTS 引擎走**，而不是跟着侧车在不在走。
-    # 之前按侧车可用性判断，结果引擎切到 edge 了还在走 /api/tts_stream（那条链路只通向
-    # 神经侧车），等于用错误的引擎出音。现在只有真的在用神经引擎时才流式。
-    if getattr(tts, "engine", "edge") == "edge":
-        return False
+def live_tts_mode() -> str:
+    """edge 长连的档位：off / first / all（默认 all）。"""
     try:
-        from .tts import neural
+        from .tts import live_edge
 
-        return bool(neural.available())
-    except Exception:  # noqa: BLE001
-        return False
+        if live_edge.LIVE.override_mode:
+            return live_edge.LIVE.override_mode      # A/B 调试覆盖（/api/debug/inject）
+        return live_edge.live_mode()
+    except Exception as exc:  # noqa: BLE001  模块坏了就当没有，退回整句 mp3
+        print(f"[tts] live_edge 不可用：{type(exc).__name__}: {exc}", flush=True)
+        return "off"
+
+
+def stream_engine() -> str | None:
+    """这次该用哪个流式音源：'live' | 'neural' | None（None = 走整句 mp3）。"""
+    if TTS_STREAM_MODE in ("0", "off", "false", "mp3"):
+        return None
+    if TTS_STREAM_MODE == "edge":        # 旧开关语义：强制整句 mp3
+        return None
+    if TTS_STREAM_MODE == "neural":
+        return "neural"
+    # auto：跟着当前 TTS 引擎走，而不是跟着"谁在不在"走。
+    # 之前按侧车可用性判断，结果引擎切到 edge 了还在走 /api/tts_stream（那条链路只通向
+    # 神经侧车），等于用错误的引擎出音。
+    if getattr(tts, "engine", "edge") != "edge":
+        try:
+            from .tts import neural
+
+            return "neural" if neural.available() else None
+        except Exception:  # noqa: BLE001
+            return None
+    return "live" if live_tts_mode() != "off" else None
+
+
+def stream_tts_enabled() -> bool:
+    return stream_engine() is not None
+
+
+def _live_status() -> dict:
+    """debug/QA 用：长连是不是热的、握手花了多少、首块多少（不用翻日志）。"""
+    try:
+        from .tts import live_edge
+
+        st = dict(live_edge.LIVE.stats)
+        st["mode"] = live_tts_mode()
+        st["alive"] = live_edge.LIVE.alive()
+        return st
+    except Exception as exc:  # noqa: BLE001
+        return {"mode": "error", "err": f"{type(exc).__name__}: {exc}"}
+
+
+def live_prewarm() -> None:
+    """轮次一开始就把 850ms 握手藏进 LLM 首字（≈1.0s）的等待里。
+
+    不做成"只在常驻连接上省时间"：实测这条 WSS 空闲 ~75s 就会被服务端关掉
+    （即使每 12–15s 发 ping），所以答案不是假设它一直活着，而是每次对话前重新热一次。
+    冷启动的第一次对话同样有效——这正是重复率最高的场景。
+    """
+    if live_tts_mode() == "off":
+        return
+    try:
+        from .tts import live_edge
+
+        live_edge.LIVE.prewarm()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] live prewarm 失败（不影响主链路）：{type(exc).__name__}: {exc}",
+              flush=True)
 
 
 def est_speech_ms(text: str) -> int:
@@ -758,7 +813,8 @@ async def run_turn(s: Session, seq: int, epoch: int, text: str, kind: str, queue
     rnd = perf.new_rnd(seq)
     faces: dict[str, Any] = {"hold_ms": 250, "filler": None, "early_sent": False}
     sent_list: list[str] = []
-    stream_mode = stream_tts_enabled()
+    stream_mode = stream_engine()
+    live_mode = live_tts_mode()
 
     async def tts_worker() -> None:
         """并发合成 + 按序下发。
@@ -776,11 +832,15 @@ async def run_turn(s: Session, seq: int, epoch: int, text: str, kind: str, queue
 
         async def synth_one(sentence: str, index: int):
             # 流式档：服务端不合成，只把「去哪拿这段 PCM」告诉客户端。
-            # 为什么让浏览器直接拉：侧车是逐块吐 PCM 的，服务端再中转一遍等于多一跳；
+            # 为什么让浏览器直接拉：音源是逐块吐 PCM 的，服务端再中转一遍等于多一跳；
             # 而客户端拿到第一块就能开播（首包 200–400ms），这是唯一能压到真人反应速度的做法。
             # 例外：预设命中时**走文件**更好——那条音频启动时已经预合成进 media/tts 缓存，
-            # 直接给一个静态 mp3 是 0 合成；走流式反而要侧车现算一遍，把省下的时间又还回去。
-            if stream_mode and hit is None:
+            # 直接给一个静态 mp3 是 0 合成；走流式反而要现算一遍，把省下的时间又还回去。
+            # live 档的 first 模式只让第一句走流式：首句之外走整句管线，保证句间用
+            # 预取好的 mp3（4 路并发合成）衔接，不依赖流式串行。
+            want_stream = bool(stream_mode) and hit is None and (
+                stream_mode == "neural" or live_mode == "all" or index == 0)
+            if want_stream:
                 return {"stream": True, "est_ms": est_speech_ms(sentence),
                         "url": stream_url(sentence, ctx["emotion"], index)}
             async with sem:
@@ -1204,6 +1264,19 @@ async def run_turn(s: Session, seq: int, epoch: int, text: str, kind: str, queue
                     gate_viol = ["注入故障：模拟首句答非所问"]
                     gate_failed = True
                     break
+                if s.inject.get("time_fail"):
+                    # 注入一次「自创时间」：把一句**已知编造**的台词交给**真实的** plan.gate_check，
+                    # 验证时间白名单确实接在首句闸门上、且能走到重写/兜底。
+                    # 为什么非注入不可：真模型很少编时间（183 条历史真台词里只出现 2 次，
+                    # 见 docs/TIMECHECK_2026-10-21.md），不注入就永远测不到这条路径。
+                    # 如果白名单失效，下面的替代违规文本会出现在日志里（可区分"没测到"与"通过"）。
+                    s.inject["time_fail"] = False
+                    probe = "从早上七点开始，我在这里坐了四个半小时。"
+                    gate_viol = plan.gate_check(probe, recent=s.recent, first=True)
+                    if not gate_viol:
+                        gate_viol = ["注入故障：时间白名单没有生效（这是失败，不是通过）"]
+                    gate_failed = True
+                    break
                 gt = time.monotonic()
                 gate_viol = plan.gate_check(joined, recent=s.recent, first=True)
                 gate_ms += (time.monotonic() - gt) * 1000
@@ -1495,6 +1568,7 @@ async def create_session(payload: dict | None = None):
     mode = (payload.get("mode") or LLM_MODE).lower()
     s = get_session(sid, mode)
     s.log("session_start", mode=mode)
+    live_prewarm()      # 会话一建就热一条长连：用户还在想说什么，握手已经付掉了
     return {"session_id": sid, "mode": mode, "character": persona.CHARACTER["name"],
             "llm": llm_for(mode).name, "voice": tts.voice, "beat": s.beat}
 
@@ -1517,6 +1591,9 @@ async def turn(request: Request):
         s.task.cancel()
         s.log("turn_preempted", seq=seq)
     queue: asyncio.Queue = asyncio.Queue()
+    # 预热：LLM 首字 p50 ≈1.0s，比 edge 握手（≈850ms）长，正好把这段藏起来。
+    # 放在 create_task 之前（非阻塞）：连得上就连得上，连不上合成时会再试并回落。
+    live_prewarm()
     s.task = asyncio.create_task(run_turn(s, seq, epoch, text, kind, queue))
     # X-Turn-Seq 把「服务端认为这是第几轮」直接告诉前端：前端用它对齐 activeSeq，
     # 任何一侧多算/少算一次都不会再让整轮事件被当成迟到事件丢掉。
@@ -1588,11 +1665,19 @@ async def history(sid: str):
 @app.post("/api/debug/inject")
 async def inject(payload: dict):
     s = get_session(payload.get("session_id") or "")
-    for key in ("llm_timeout", "tts_fail", "slow_tts", "gate_fail"):
+    for key in ("llm_timeout", "tts_fail", "slow_tts", "gate_fail", "time_fail"):
         if key in payload:
             s.inject[key] = bool(payload[key])
+    # A/B 用：进程内切换 MIRA_TTS_LIVE 档位（off/first/all），不用重启服务。
+    # 为什么需要：A/B 必须交替跑、同一个进程、同一批缓存，重启一次就多一批变量。
+    # 只影响本进程；重启后回到环境变量值。
+    if "tts_live" in payload:
+        from .tts import live_edge
+
+        live_edge.LIVE.override_mode = str(payload["tts_live"] or "").strip().lower() or None
+        print(f"[tts] live 档位切到 {live_edge.live_mode()}（A/B）", flush=True)
     s.log("inject", **s.inject)
-    return {"ok": True, "inject": s.inject}
+    return {"ok": True, "inject": s.inject, "tts_live": _live_status()}
 
 
 @app.get("/api/health")
@@ -1613,6 +1698,8 @@ async def health():
         "chain_keys": list(AUTO_CHAIN),
         "modes": list(LLMS) + ["cloud"], "tts_cache": len(list(providers.TTS_CACHE.glob("*.mp3"))),
         "tts_stream": stream_tts_enabled(), "neural_url": NEURAL_TTS_URL,
+        # live 档位的自证：前端/QA 不用看日志就能知道长连是不是热的、赚到了多少
+        "tts_live": _live_status(),
         # 预设库：条数 / 路径 / 覆盖的行为。健康检查里能看到它，才知道加速层在不在。
         "presets": PRESETS.summary(),
         "trace": trace.enabled(),
@@ -1685,11 +1772,34 @@ async def cloud_clear():
 
 @app.get("/api/tts_stream")
 async def tts_stream(text: str, emotion: str = "neutral", position: str = "follow"):
-    """同源转发侧车的裸 PCM（audio/L16 24k 单声道）。
+    """同源流式 PCM（audio/L16 24000 单声道）。客户端边收边排期播放：第一块到就出声。
 
-    客户端边收边排期播放：第一块到就开始出声，不整句缓冲。侧车不可用时流会立刻
-    短掉（返回空体），客户端发现字节数太少会改用 /api/tts_file 的 mp3 兜底。
+    两个音源共用这一条契约，播放器不区分：
+      live    edge 长连（默认）：一条保温 WSS 合成，边收 mp3 边增量解码成 PCM。
+              音色/参数和整句路径完全一致（同一个 tts.voice + providers.style_for）。
+      neural  神经侧车：原样转发侧车的裸 PCM。
+
+    客户端断开（打断）时 StreamingResponse 会取消这个生成器 → live 连接被标脏并
+    立刻停读 WSS（下次 ensure() 重连），所以打断不会把上一句的残音带进下一轮。
     """
+    engine = stream_engine()
+    if engine == "live":
+        from .tts import live_edge
+
+        st = tts.style_for(text, emotion)
+
+        async def gen_live():
+            async for pcm in live_edge.LIVE.pcm_stream(
+                text, voice=tts.voice, rate=st["rate"], pitch=st["pitch"],
+                volume=st["volume"],
+            ):
+                yield pcm
+
+        return StreamingResponse(gen_live(), media_type="audio/L16;rate=24000;channels=1",
+                                 headers={"Cache-Control": "no-store", "X-Sample-Rate": "24000",
+                                          "X-TTS-Engine": "live",
+                                          "X-Accel-Buffering": "no"})
+
     import httpx
 
     async def gen():
@@ -1847,9 +1957,38 @@ async def warm_tts() -> None:
         await _warm_fillers()
         await _warm_tts()
 
+    async def _warm_live() -> None:
+        """长连预热 + 保活：启动就连一条，此后每轮 turn 开始再检查一次（见 live_prewarm）。
+
+        为什么启动就付一次 850ms：录屏/演示时第一句话是最容易被相机拍到的，
+        它不能背这个握手。保活任务负责"一直热着"，turn 级预热负责"死掉也能马上热回来"。
+        """
+        try:
+            from .tts import live_edge
+
+            live_edge.LIVE.start()
+            await live_edge.LIVE.ensure()
+            print(f"[warm] tts-live: {live_edge.LIVE.stats['last_connect_ms']}ms "
+                  f"(MIRA_TTS_LIVE={live_edge.live_mode()})", flush=True)
+        except Exception as exc:  # noqa: BLE001  长连起不来只是慢一点，不是致命错误
+            print(f"[warm] tts-live 未就绪（会自动回退整句 mp3）："
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
     asyncio.create_task(_warm_audio())
     asyncio.create_task(_warm_decision())
     asyncio.create_task(_warm_llm())
+    asyncio.create_task(_warm_live())
+
+
+@app.on_event("shutdown")
+async def close_live_tts() -> None:
+    """退出时把长连关掉：不留半条 WSS 让对端等超时。"""
+    try:
+        from .tts import live_edge
+
+        await live_edge.LIVE.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.get("/")

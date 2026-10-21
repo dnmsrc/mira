@@ -327,6 +327,7 @@ class Plan:
     content_is_fact: bool = True                       # False = content 是「要做到的事」不是台词素材
     topic: str = ""                                    # 被问的那件事（机检标签）
     anchors: list[str] = field(default_factory=list)   # 回答里必须点到的话题词（机检）
+    time_ok: set[str] = field(default_factory=set)     # 本轮额外允许的时间（对方刚说过的时间）
     gate: bool = False                                 # 是否走首句闸门（app/main.py）
     must_ask: bool = False                             # 这一轮要把话头交回去（反问）
     ask_hint: str = ""                                 # 反问的具体形态（按轮次轮换，见 _ASK_HINTS）
@@ -362,7 +363,8 @@ class Plan:
             lines.append(f"绝对不能说：{'、'.join(self.forbid)}。")
         if self.avoid:
             lines.append(f"这轮禁用这些词：{'、'.join(self.avoid)}")
-        lines.append(f"整轮不超过 {self.max_chars} 字，只写你会说出口的话。")
+        lines.append(f"整轮不超过 {self.max_chars} 字，只写你会说出口的话。"
+                     f"时间只用事实表里的说法，不要自己编钟点或时长。")
         return "\n".join(lines)
 
     def gate_check(self, reply: str, recent: list[str] | None = None,
@@ -386,6 +388,19 @@ class Plan:
         stray_latin = latin_words(body)
         if stray_latin:
             out.append(f"夹杂英文单词「{stray_latin[0]}」")
+        # 时间白名单（问题 8 残项）：钟点/具体时长必须能在事实表或对方这句话里找到出处。
+        # 放在首句闸门里也查（first=True）——实测那句「从早上七点开始……四个半小时」
+        # 就落在第一句，只查整段的话已经念出去了才判，等于没查。
+        allow, hint = _time_base()
+        if allow:
+            hard_bad, soft_bad = time_audit(body, allow | set(self.time_ok or ()))
+            if hard_bad:
+                out.append(f"时间「{hard_bad[0][0]}」不在事实表里（只说过：{hint}），"
+                           f"不要自己编钟点或时长")
+            for surf, _canon in soft_bad:
+                note = f"时间白名单（软，未重写）：「{surf}」事实表里没有"
+                if note not in self.notes:
+                    self.notes.append(note)
         # 核心：回答必须落到被问的那件事上（允许挡，但挡也要挡对题）
         if self.anchors and not any(a in body for a in self.anchors):
             # 2026-10-21：这里原来是**硬判**（返回违规 → 丢掉整段已生成内容，再调一次模型重写）。
@@ -566,6 +581,204 @@ def _clauses(body: str, min_len: int = 6) -> list[str]:
         if len(norm) >= min_len:
             out.append(norm)
     return out
+
+
+# ----------------------------------------------------- 时间白名单（问题 8 残项）
+#
+# 为什么需要：4B 手里没有可用的时间锚点时**会自己造一个**。2026-10-21 实跑里
+# 「说好十点半」被编成「从早上七点开始，我在这里坐了四个半小时」——句子通顺，
+# 但和事实表直接打架，观众听到的是"她在编"，比语病更像故障。
+# 修法不是再写一遍提示词（提示词里早就写了「不要编具体钟点」，服从率不够），
+# 而是**机检**：台词里出现的钟点/具体时长，必须能在事实表（或对方刚说的话）里
+# 找到出处，否则本轮判违规，走已有的「整段重写一次 → 仍不过用确定性兜底」。
+#
+# 刻意保留的模糊表达不算违规：「一会儿」「半天」「好几天」、≤30 分钟的短时长，
+# 以及数量词（一杯、一张、两个人）。只卡「观众会当成剧情信息的时间」。
+
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_CLOCK = "一二三四五六七八九十两"
+_PERIOD = r"(?:凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里|半夜|深夜)"
+
+_CLOCK_RX = re.compile(
+    _PERIOD + r"?\s*(?P<h>[0-9]{1,2}|[" + _CN_CLOCK + r"]{1,3})\s*[点點]\s*"
+    r"(?P<m>半|一刻|三刻|[0-9]{1,2}|[" + _CN_CLOCK + r"]{1,3})?")
+_COLON_RX = re.compile(r"(?<![0-9])(?P<h>[01]?[0-9]|2[0-3])\s*[:：]\s*(?P<m>[0-5][0-9])(?![0-9])")
+_DUR_RX = re.compile(
+    r"(?P<n>[0-9]{1,2}|[" + _CN_CLOCK + r"]{1,3})\s*个?\s*(?P<half>半)?\s*"
+    r"(?P<unit>个?小时|钟头|分钟|秒钟|秒|年|个月|月)")
+# 没有数字的「半年 / 半小时 / 半个月」也得认：那不是模糊表达，是具体时长。
+_BARE_DUR_RX = re.compile(r"(?P<pre>半)\s*个?\s*(?P<unit>小时|钟头|分钟|年|个月|月)")
+# 口语填充时长：≤30 分钟不当剧情信息（「等我十分钟」不该被判成编时间）。
+_DUR_FREE = frozenset({"t:2", "t:5", "t:10", "t:15", "t:30"})
+
+_BASE: dict = {"ok": None, "hint": ""}
+
+
+def _num(s: str) -> int | None:
+    """中文/阿拉伯数字 → int（支持 十一 / 二十 / 二十三 / 两）。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    if "十" in s:
+        a, _, b = s.partition("十")
+        tens = _CN_DIGIT.get(a, 1) if a else 1
+        return tens * 10 + (_CN_DIGIT.get(b, 0) if b else 0)
+    if len(s) == 1:
+        return _CN_DIGIT.get(s)
+    try:
+        return int("".join(str(_CN_DIGIT[c]) for c in s))
+    except (KeyError, ValueError):
+        return None
+
+
+def _clock_canon(h: int, m: int) -> str:
+    return f"c:{(h % 24) * 60 + m}"
+
+
+def _time_hits(s: str) -> list[tuple[int, str, str]]:
+    """(位置, 原文片段, 规范化) —— 钟点、冒号时间、具体时长三种写法都收。"""
+    s = re.sub(r"\s+", " ", s or "")
+    hits: list[tuple[int, str, str]] = []
+    for mo in _CLOCK_RX.finditer(s):
+        h = _num(mo.group("h"))
+        if h is None or h > 24:
+            continue
+        raw_m = mo.group("m")
+        if not raw_m:
+            # 没有分钟部分时只认 6 点以后：「有一点冷」「差一点」「快一点」不是时间。
+            if h < 6:
+                continue
+            m = 0
+        elif raw_m == "半":
+            m = 30
+        elif raw_m == "一刻":
+            m = 15
+        elif raw_m == "三刻":
+            m = 45
+        else:
+            m = _num(raw_m)
+            if m is None or m > 59:
+                continue
+        hits.append((mo.start(), mo.group(0).strip(), _clock_canon(h, m)))
+    for mo in _COLON_RX.finditer(s):
+        hits.append((mo.start(), mo.group(0).strip(),
+                     _clock_canon(int(mo.group("h")), int(mo.group("m")))))
+    for mo in _DUR_RX.finditer(s):
+        n = _num(mo.group("n"))
+        if n is None:
+            continue
+        val = n + (0.5 if mo.group("half") else 0)   # 四个半小时 = 4.5
+        unit = mo.group("unit")
+        if unit in ("小时", "个小时", "钟头"):
+            hits.append((mo.start(), mo.group(0).strip(), f"t:{int(round(val * 60))}"))
+        elif unit == "分钟":
+            hits.append((mo.start(), mo.group(0).strip(), f"t:{int(round(val))}"))
+        elif unit in ("秒", "秒钟"):
+            hits.append((mo.start(), mo.group(0).strip(), f"s:{val:g}"))
+        elif unit == "年":
+            hits.append((mo.start(), mo.group(0).strip(), f"y:{val:g}"))
+        elif unit in ("个月", "月"):
+            hits.append((mo.start(), mo.group(0).strip(), f"mo:{val:g}"))
+    # 没有数字的「半年 / 半小时 / 半个月」：半小时类落在 _DUR_FREE 里放行，
+    # 半年/半个月是真时长，必须能对上事实表。
+    for mo in _BARE_DUR_RX.finditer(s):
+        surf = mo.group(0).strip()
+        unit = mo.group("unit")
+        if unit in ("小时", "钟头", "分钟"):
+            hits.append((mo.start(), surf, "t:30"))
+        elif unit == "年":
+            hits.append((mo.start(), surf, "y:0.5"))
+        elif unit in ("个月", "月"):
+            hits.append((mo.start(), surf, "mo:0.5"))
+    return sorted(hits)
+
+
+def time_tokens(text: str) -> set[str]:
+    """一段文字里所有「会被当成剧情信息的时间」→ 规范化集合。纯函数，可单测。"""
+    return {c for _, _, c in _time_hits(text)}
+
+
+def _clause_at(s: str, pos: int) -> str:
+    """取 pos 所在的那个分句（按中文标点切）——判断"这个时间是在说谁的事"用。"""
+    starts = [0]
+    for mo in re.finditer(r"[，。！？；、,.!?;\n]", s):
+        if mo.start() >= pos:
+            break
+        starts.append(mo.end())
+    head = starts[-1] if starts else 0
+    end = len(s)
+    for mo in re.finditer(r"[，。！？；、,.!?;\n]", s):
+        if mo.start() >= pos:
+            end = mo.start()
+            break
+    return s[head:end]
+
+
+# 「她自己的时间线」在说什么：等待 / 约好 / 坐着 / 上班 / 打烊 / 一直……
+# 只有这类时长才和事实表（十点半、快十二点、三年前）存在被观众抓到矛盾的风险。
+_SELF_TIME = re.compile(r"[我咱]|等+待?|约|说好|坐|开始|上班|下班|打烊|守|一直|来了|到场")
+
+
+def time_audit(body: str, allow: set[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """分成两档：该重写的（硬）/ 只留痕的（软）。
+
+    为什么分档：历史 173 条真台词里，机检会响 7 次，其中 6 次是**环境铺垫**
+    （「雨停了快一个小时」「这雨停了快三小时了」）——时间上无害，但按硬判会让
+    每一轮都多付一次整段重写（+3~9s），首句延迟又回到上一轮被骂的位置。
+    真正和事实表打架的是**钟点**（「早上七点」vs 十点半）和**她自己时间线上的时长**
+    （「我在这里坐了四个半小时」）。钟点一律硬判；时长只在分句里有她自己时才硬判，
+    其余发观测面板留痕、不进重写。这条分档规则本身在 tools/qa/test_timecheck.py 里有用例。
+    """
+    s = re.sub(r"\s+", " ", body or "")
+    hard: list[tuple[str, str]] = []
+    soft: list[tuple[str, str]] = []
+    for pos, surf, canon in _time_hits(s):
+        if canon in allow or canon in _DUR_FREE:
+            continue
+        if canon.startswith("c:"):
+            hard.append((surf, canon))
+            continue
+        (hard if _SELF_TIME.search(_clause_at(s, pos)) else soft).append((surf, canon))
+    return hard, soft
+
+
+def time_offenders(body: str, allow: set[str]) -> list[tuple[str, str]]:
+    """台词里「事实表没有出处、且会被观众当成剧情时间」的片段；空 = 通过。"""
+    return time_audit(body, allow)[0]
+
+
+def _time_base() -> tuple[set[str], str]:
+    """角色事实表（卡包 facts + 各拍既定台词）里出现过的时间 → (集合, 人话提示)。
+
+    懒加载：director 是纯逻辑模块，顶层 import persona 会绕成环
+    （persona → cards，main → director + persona）。取不到就**失败放行**：
+    宁可漏检一次，也不能因为白名单为空把「十点半」误杀成违规、每轮都白重写。
+    """
+    if _BASE["ok"] is not None:
+        return _BASE["ok"], _BASE["hint"]
+    blob: list[str] = []
+    try:
+        from . import persona
+
+        for f in persona.CHARACTER.get("facts") or []:
+            blob.append(str(f.get("say") or ""))
+        for b in persona.BEATS or []:
+            if isinstance(b, dict):
+                for k in ("mock", "say"):
+                    blob.append(str(b.get(k) or ""))
+    except Exception:  # noqa: BLE001  纯逻辑模块被单独 import 时不报错
+        blob = []
+    hits = _time_hits(" ".join(blob))
+    ok = {c for _, _, c in hits}
+    seen: list[str] = []
+    for _, surf, _ in hits:
+        if surf not in seen:
+            seen.append(surf)
+    _BASE["ok"], _BASE["hint"] = ok, ("、".join(seen[:6]) or "—")
+    return ok, _BASE["hint"]
 
 
 def _plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str] | None = None,
@@ -1271,6 +1484,9 @@ def plan_turn(text: str, *, facts: list[str] | None = None, new_facts: list[str]
     plan = _plan_turn(text, facts=facts, new_facts=new_facts, recent=recent,
                       is_open=is_open, beat=beat, turn_no=turn_no,
                       prev_contents=prev_contents, prev_topics=prev_topics)
+    # 对方自己说过的时间允许她复述（「你不是说七点来的吗」）：把他这句话里的时间
+    # 并进白名单，否则她会因为「引用了对方说过的时间」被判编造。
+    plan.time_ok = time_tokens(text)
     prev_contents = list(prev_contents or [])
 
     # 跨轮去重：连问同一件事时，4B 会把上一轮原样再说一遍（实测逐字重复）。
