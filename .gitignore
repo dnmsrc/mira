@@ -20,6 +20,15 @@ production/reports/*
 !production/reports/demo/
 production/reports/demo/*
 !production/reports/demo/mira_demo_4min.mp4
+# 2026-10-22：v20 交付成片也进仓库（交付要求的 3–5 分钟录屏）。
+# 分段原料（原视频/音轨/中间件）仍然忽略，只留成片 + 报告 + 验收截图。
+!production/reports/demo_v20/
+production/reports/demo_v20/raw/
+production/reports/demo_v20/segments/
+!production/reports/demo_v20/mira_demo_v20.mp4
+
+# 临时目录：调试脚本、抽帧、生成中的图，不进仓库
+.tmp/
 logs/
 production/session-state/
 # dsh-studio 本地工具状态（不是交付物）

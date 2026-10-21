@@ -1,7 +1,9 @@
 # Mira · 实时互动场景（72 小时实验）
 
-暴雨刚停的夜里，一家即将打烊的咖啡馆。Mira 穿着琥珀色雨衣坐在窗边，似乎在等一个不会来的人。
-你可以打字或按住麦克风和她说话，她**会开口（语音 + 字幕）、会变表情、会做动作、会换镜头、会被你这句台词触发一段演出（闪电 / 照片 / 车灯）**；她说话时你随时可以开口打断。
+暴雨刚停的夜里，一家即将打烊的咖啡馆。Mira 穿着琥珀色雨衣坐在窗边，在等一个两年没见的人，
+而她的手机从七点起就没电了。你可以打字或按住麦克风和她说话，她**会开口（语音 + 字幕）、
+会变表情、会做动作、会换镜头（打烊关灯）、会因为你这句话触发一段演出（把手机借给她之后的那通电话 / 雷闪）**；
+她说话时你随时可以开口打断。聊到 21:00 打烊，故事自然收束到三个结局之一。
 
 不是聊天列表：整屏都是场景和角色，交互入口只是一条字幕区 + 一个麦克风。
 
@@ -62,10 +64,10 @@ $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 | 结构化角色/场景指令 | **首行 JSON 指令 + 换行 + 台词**，5 个维度、白名单收敛 | `cards/*/card.yaml` / `app/main.py:header_probe` |
 | 一份数据三处用（卡包） | 卡包同时驱动提示词、指令枚举、客户端素材清单 `/api/card` | `cards/mira_cafe/card.yaml` / `app/cards.py` |
 | ≥3 种情绪 | neutral / smile / worried / surprised / thinking / listen，6 张独立表情贴片 | `app/static/assets/char/` |
-| ≥2 种非说话动作 | look_window / look_door / sip_coffee / check_phone / lean_in / show_photo / stand | `app.js:applyAction` |
+| ≥2 种非说话动作 | look_window / sip_coffee / check_phone / lean_in / phone_call / stand，7 张独立动作贴片 | `app.js:applyAction` |
 | ≥1 次背景/镜头/环境变化 | 镜头推近（整舞台 transform，不重绘素材）、灯光转暗（环境叠加，收尾拍固定触发） | `app.js:applyScene` |
-| ≥1 个由对话触发的视觉事件 | 雷闪 / 照片演出 / 末班车，**内容触发 + 剧情跳转**（见 §5.2） | `main.py:finalize` / `app.js:triggerEvent` |
-| 一种多模态表现能力 | **程序合成的演出层**：闪电补光 + 瞬时滚雷（WebAudio）/ 照片静帧推近 / 车灯横扫 | `app.js:triggerEvent` `rumble` `carSweep` |
+| ≥1 个由对话触发的视觉事件 | **接电话演出**（剧情节点 `phone_call` 触发：换贴片 + 屏幕冷光 + 环境音压低 2.6s）/ 雷闪（台词含「雷」触发） | `card.yaml:event_keywords` / `app.js:triggerEvent` |
+| 一种多模态表现能力 | **序列帧角色动画 + 程序合成演出层**：11 张同机位表情/动作贴片按音频时钟切换；闪电补光、滚雷、屏幕冷光、结局静帧全部程序合成 | `app.js:showSprite` `triggerEvent` |
 | 素材加载/结束/打断处理 | 静帧「加载中」徽标、`onload` 收层、打断即清 `src`（原来的 MP4 路径已删除） | `app.js:showStill` / `hideCinema` |
 | 生成中状态与失败处理 | 「静帧加载中…」徽标、失败降级为暗角+徽标、闪电/车灯天然不需要素材 | `app.js:degradeEvent` |
 | 模型超时/断线/失败反馈 | LLM 首 token 14s/整体 35s 超时、TTS 失败降级、注入故障可复现 | `main.py` / 观测面板 |
@@ -237,22 +239,45 @@ default 轮根本没有 content；而机检只覆盖 2 个关键轮，其余轮�
 > **[`docs/DIALOGUE_LOGIC.md`](docs/DIALOGUE_LOGIC.md)**；取证数据在
 > `docs/review/dialogue/`（12 句固定剧本 × before/after，含逐轮原始记录与报告）。
 
-### 5.2 剧情推进：内容触发，而不是计时器
+### 5.2 剧情推进：故事节点图（`app/story.py`）
 
-- **用户问到哪一拍的话题，剧情就跳到哪一拍**（`beat_jump`）。用户一进门就问「能看看那张
-  照片吗」，她不会用一句废话糊过去，而是**当拍就掏出照片**并播放照片演出——这既符合题目
-  「视觉事件必须由对话内容触发」，也让用户感到「我说的话真的改变了剧情」。
-- 用户不问时，靠 `min_turns / min_hits / max_turns` 兜底往前走，保证 3–5 分钟里剧情一定会收尾。
-- 每个事件的「最早节拍」写在卡包里；现在照片/末班车都是 0，因为**挡住的代价（答非所问）
-  比提前演的代价大得多**。
+v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点图**，写在
+`cards/mira_cafe/card.yaml` 的 `story.nodes` 里：20 个节点、三个结局、一条借电话分支。
+判定全部是**纯函数**（不调模型、不看台词生成结果），所以 0 延迟、可单测。
+
+推进有三条路，优先级从高到低：
+
+1. **本节点的语义分支**：`ask_any`（用户这句话命中了本节点声明的话题词）/ `flag`
+   （借电话）/ `roll`（电话 70% 打通）/ `clock_gte`。用户说到就当场跳，不看轮数。
+2. **全表问句加速**（`_accelerate`）：本节点没声明、但**后面 4 个节点内**有节点声明了
+   「说到这个词就该跳到那里」。实测价值：用户第 5 轮问「你要不打电话问问？」，此时真正
+   声明了「电话 → 手机没电」的节点已经被兜底跳过——没有这一步，这句话会被整句丢掉，
+   观感就是「剧情推不动、她自说自话」。
+3. **兜底分支**：`turn_gte: N` 按"在本节点待满几轮"往前走，保证没人说话也会到收尾。
+
+此外还有两条**硬闸门**（`clock.forced`）：20:48 必说「手机没电」、20:56 老板娘喊关灯、
+21:00 无条件进结局。场景时钟按**对话轮数**走（`minutes_per_turn: 1.5`，20:30 → 21:00 约
+20 轮），不随真实时间走 —— 否则用户发呆也算剧情在流逝。
+
+> **2026-10-22 修过的三个真 bug（都在 `app/story.py` 里留了注释）**
+> ① `tick()` 曾经在 `resolve()` 之前就把 `turns_in_node +1`，而每个节点的兜底 goto 都是
+> `turn_gte: 1` —— 条件当场成立，**每轮必跳**，节点图退化成计时器，用户说的每句话都没
+> 参与决定。现在 `end_turn()` 在 `resolve()` 之后调用。
+> ② `forced()` 曾经只判「目标节点访问过没有」，挡不住**被问句加速跳过、但没访问过**的节点：
+> 借了手机的路径走到 `release` 后，20:48 的强制点把她拖回第一幕 `phone_dead`，又按
+> `offered_phone` 跳回 `phone_offer` —— 用户听到电话打了两遍。现在按**节点表位置**判，
+> 强制点只许往前走。
+> ③ `last_minutes` 只有一条 `clock_gte: 20:56` 的 goto、没有兜底，用户落进这一拍后要
+> **空转 5 轮**才等到关灯，而这拍已经没新信息可说，模型只能反复道别、乃至编出「她来不了」
+> 这种越界结论。现在补了 `turn_gte` 兜底，进结局从 20 轮压到 **14 轮（约 3–4 分钟）**。
 
 | 字段 | 取值 | 前端表现 |
 | --- | --- | --- |
 | emotion | neutral / smile / worried / surprised / thinking / listen | 换角色贴片（叠加在固定背景板上，背景不动） |
-| action | idle / look_window / look_door / sip_coffee / check_phone / lean_in / show_photo / stand | 动作贴片 + 镜头微推；几秒后回到当前情绪贴片 |
+| action | idle / look_window / sip_coffee / check_phone / lean_in / phone_call / stand | 动作贴片 + 镜头微推；几秒后回到当前情绪贴片 |
 | scene | cafe_night / window_close / lights_dim | 整舞台镜头变换（不重绘素材）或暗场叠加 |
 | effect | rain / thunder / none | 雨后的屋檐滴水环境音、闪电补光 |
-| event | none / thunder / photo_reveal / last_train | 程序合成演出（闪电补光 / 照片静帧推近 / 车灯横扫），失败降级为最简演出 |
+| event | none / thunder / phone_call / ending | 程序合成演出（闪电补光 + 滚雷 / 屏幕冷光 + 环境音压低 / 结局静帧），失败降级为最简演出 |
 
 `fixes` 让「模型不听话」可观测：白名单收敛、节拍拦截、事件去重、关键词兜底、空台词兜底
 各有说明，观测面板能看到。
@@ -266,12 +291,12 @@ default 轮根本没有 content；而机检只覆盖 2 个关键轮，其余轮�
 1. **L0（0ms，拿到判题就发）**：`app/director.py` 的 `_EMOTION_BY_INTENT` /
    `_ACTION_BY_INTENT` 按意图给出表情与动作，客户端不必等模型首字就能换脸/演动作；
 2. **第一句台词落地后（~0.7–1.2s）**：`director.dialog_fix()` 用**真实台词**再校正一次，
-   规则写在卡包 `cards/mira_cafe/card.yaml` 的 `dialog_fix:` 段（数据，不是硬编码），
-   每个字段（emotion / action）取第一条命中的规则，双向生效：
-   - 台词提到照片 / 「拿给你看」/「内袋」→ 允许并倾向 `show_photo`；
-   - 表里要掏照片但台词没提照片 → **降级**成 `look_window`（不许无缘无故掏照片）；
-   - 台词提到雨/窗外 → `look_window`；门口/老板娘 → `look_door`；手机/电话 → `check_phone`；
-     咖啡/杯子 → `sip_coffee`；该走了/关门/起身 → `stand`；
+   规则写在卡包 `cards/mira_cafe/card.yaml` 的 `corrections:` 段（数据，不是硬编码），
+   每个字段（emotion / action）取第一条命中的规则，**双向生效**：
+   - 台词提到雨/窗外 → `look_window`；手机/电话/没电 → `check_phone`；咖啡/杯子 → `sip_coffee`；
+   - **反向约束**（这条最有价值）：表里要演 `phone_call` 但台词里一个「打/拨/喂/电话」都没有
+     → **降级**成 `check_phone`（不许没头没尾地开始打电话）；
+     `stand` 只允许在 `lights_dim` / 三个结局节点出现，早于此一律降级回 `idle`；
    - 她自己**说话时**一律不允许 `listen` 表情（这是上一轮反馈里「她说着话却在倾听」的兜底漏点）。
 3. 校正是**增量事件** `directive_patch`（只带 emotion/action），客户端立即应用；
    `done.dialog_fix = {n, fixes, emotion, action}` 与 `logs/turns.jsonl` 的 `dialog_fix_n` 留痕，
@@ -293,9 +318,9 @@ default 轮根本没有 content；而机检只覆盖 2 个关键轮，其余轮�
 
 | 事件 | 触发 | 表现 | 实现 |
 | --- | --- | --- | --- |
-| `thunder` | 台词提到雷/闪电；或用户被雷声吓到 | 三段冷蓝补光（`@keyframes lightning`）+ 低频滚雷 | `doFlash()` + `rumble(1.0, 1.6)` |
-| `photo_reveal` | 剧情第 4 拍后提到照片/相机 | 角色换 `show_photo` 贴片，照片静帧推近 + 徽标 | `showStill(polaroid)` |
-| `last_train` | 提到末班车/打烊/要走 | 一条光带从窗外横扫 2.6s + 远处低频轰鸣 | `carSweep()` + `rumble(0.5, 2.8)` |
+| `phone_call` | **剧情节点** `phone_call`（借了手机 → 她按号码） | 角色换「手机贴耳」贴片 + 屏幕冷光闪一下 + **环境音压低 2.6s**（世界安静了一瞬）+ 顶部徽标 | `applyAction` + `triggerEvent("phone_call")` |
+| `thunder` | 台词里出现「雷 / 闪电 / 打雷」 | 三段冷蓝补光（`@keyframes lightning`）+ 低频滚雷（WebAudio 合成，无素材） | `doFlash()` + `rumble(1.0, 1.6)` |
+| `ending` | 进结局节点 | 整屏静帧（`ending/friend.webp` / `stranger.webp`）+ 徽标「21:00 · …」 | `handleEnding` → `showStill` |
 
 > 演出仍然是「插入镜头」：`photo_reveal` 会整屏进 cinema 层，结束后回到常驻舞台；
 > 常驻舞台本身永远是「背景板 + 角色贴片」两层，**不依赖任何视频**，删视频不影响待机画面。
@@ -326,7 +351,7 @@ default 轮根本没有 content；而机检只覆盖 2 个关键轮，其余轮�
 | 角色抠像 | rembg `isnet-anime` + 连通域清理 | 得到带 alpha、与背景板同机位的角色贴片 |
 | 演出（已删视频） | ~~AniSora V3.1（Wan2.1-I2V-14B fp8）~~ → 程序合成 + 一张静帧 | 原来生成 4 段 MP4，但机位/光线和底板不是同一场戏，2026-10-20 全部删除；现在闪电/车灯用 CSS + WebAudio 合成，照片用 `insert/polaroid.jpg` 推近 |
 | 对话 | Mock 剧本 / Qwen3.8-4B（llama.cpp，OpenAI 兼容） | 真实模式完全本地，无云端密钥 |
-| TTS | edge-tts `zh-CN-XiaoxiaoNeural`（rate +6%，pitch -2Hz） | 无 Key；mp3 按文本哈希缓存，重复台词 0 开销 |
+| TTS | edge-tts `zh-CN-XiaoyiNeural`（rate -6%，pitch -8Hz，音量 0） | 无 Key；按句流式合成（长连保活）、PCM 边收边播；同文本缓存命中 0 开销 |
 | STT | faster-whisper `small`，CPU int8，VAD | 热身后 2.2s 语音约 2.2s 转写；`WHISPER_SIZE=base` 可降到 0.8s |
 
 ### 7.1 两个专门工作流，配合使用
@@ -514,7 +539,7 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
    详见 [docs/UNFIXED_2026-10-21.md](docs/UNFIXED_2026-10-21.md) §1 与
    [docs/review/p1/REPORT.md](docs/review/p1/REPORT.md)。方法不是光流形变（实测方向是错的），
    而是 **SDF 剪影插值 + 单源锁脸 + 逐像素时变权重**。
-   仍然存在：三个道具动作（咖啡杯/手机/拍立得）中间两帧里道具是"淡入"的，
+   仍然存在：三个道具动作（咖啡杯/手机/举手）中间两帧里道具是"淡入"的，
    432px 交付尺寸下读作"手正举起来"，1:1 能看到杯后透出口型。
 5. 桌面端是**居中取景框**（600px）+ 同一张场景板的模糊余光底图，不是自适应大屏布局。
    题目只要求"桌面端可以正常体验"，这一版满足该要求但不算加分项；
@@ -559,10 +584,10 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
     验收图 `docs/review/plate_composite_check.png`。
     但它仍是「生成的一家虚构咖啡馆」，不是真实店铺复刻——下一步用真实店铺照片做 ControlNet/img2img。
     她手里的杯子因为是旧构图抠出来的，边缘仍有半透明感（已用 alpha 增益压到可接受）。
-13. **4 分钟演示录屏已于 2026-10-21 01:0x 重录**（`production/reports/demo/mira_demo_4min.mp4`），
-    对应状态是：兜帽放下版素材 + 语气词先出声 + 台词二次校正 + 桌面/移动两套验收截图。
-    录屏脚本 `tools/qa/record_demo.py` 直接驱动真实 UI（Playwright 录页面 + 页面真实音频混流），
-    不是事后配音；chapters 见同目录 `chapters.json`。
+13. **演示录屏（交付项 4）**：`production/reports/demo_v20/mira_demo_v20.mp4`，
+    用**云端 DeepSeek** 驱动、`tools/qa/record_demo_v20.py` 直接操作真实 UI 录出来的
+    （Playwright 录页面 + 页面真实音频旁路混流，不是事后配音）。三段真实会话 + 章节卡，
+    覆盖文字互动 / 打断 / 降级 / 三种结局。见 README §14。
 14. **单卡 12 GB，四个服务抢同一张卡**：app + llama-server(~3GB) + 神经 TTS(~3-4GB) +
     ComfyUI(~7GB, 只出素材时需要)。超了不是变慢，是**退到 CPU**：实测 llama 4.13 tok/s
     （首字 40s+）、ComfyUI 从 2 s/step 掉到 97.5 s/step。
@@ -591,7 +616,8 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 | **返工：卡包化**（card.yaml + 校验加载器 + /api/card + 前端素材清单化） | ~1h |
 | 素材返工调研（三视图 / 机位-道具分配 / Qwen 编辑路线） | ~1h |
 | 录屏、README、AI_USAGE、自动化测试 | ~2h |
-| **合计** | **约 18 小时**（其中约 35% 是等模型下载/推理） |
+| **第二轮返工**（用户逐条验收后）：JSON 骨架漏进字幕/语音的四环根因、剧情推不动的四个 bug、电话贴片重出 5 版、README 对齐、云端模型重录三段 | ~10h |
+| **合计** | **约 28 小时**（其中约 35% 是等模型下载/推理） |
 
 > 说明：返工的两行是这次交付里最值钱的部分——它们是**我自己体验完 Demo 之后推倒重来的**，
 > 不是按题目清单交作业。第一版「技术上达标、体验上不达标」，这一点写在 §7.3 和 §10 里。
@@ -631,6 +657,8 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 - 语音合成：edge-tts（Microsoft Edge 在线语音，免费无 Key）
 - 语音识别：faster-whisper（Systran/whisper-small，MIT）
 - 本地大模型：Qwen3.8-4B（Apache-2.0），llama.cpp 推理
+- 云端模型：DeepSeek API `deepseek-chat`（仅演示录屏时用；key 由观测面板在运行时填入，
+  **只活在服务进程内存里，不写磁盘、不进仓库**，仓库里没有任何 API 密钥）
 - 前端：原生 HTML/CSS/JS，无框架无构建步骤
 - 所有场景板、角色贴片均由上述本地模型生成，未使用第三方版权素材
 
@@ -638,28 +666,70 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 
 ## 14. 演示录屏（3–5 分钟）
 
-> **当前文件：`production/reports/demo/mira_demo_4min.mp4`（2026-10-21 01:0x 重录）。**
-> 内容对应当前状态：兜帽放下版素材、语气词先出声、台词二次校正、无视频的程序合成演出。
-> 分镜时间点见同目录 `chapters.json`（脚本自动生成，不含后期剪辑）。
+> **当前文件：`production/reports/demo_v20/mira_demo_v20.mp4`**
+> 780×1688 · 25fps · H.264 + AAC(48k mono) · **4:41（281.3s）· 54 MB**
+> 三段真实会话 + 章节卡，**用云端 DeepSeek（`deepseek-chat`）驱动**。
 
-录制脚本做三件事：Playwright 驱动真实页面；页面在 `?rec=1` 时把自己播放的每个 `<audio>`
-接进 `AudioContext → MediaStreamDestination` 录成音轨；最后用 ffmpeg mux 成 mp4，
-**音画同源**，不是后期配音。
+录制脚本 `tools/qa/record_demo_v20.py` 直接操作真实页面，做三件事：
 
-本轮分镜（`chapters.json` 里有精确时间点）：
+1. Playwright 驱动真实 UI（点开始、打字、**按住假麦克风走真实 STT 通路**、点观测面板）；
+2. 页面在 `?rec=1` 时把自己播放的每一路音频旁路进 `AudioContext → MediaStreamDestination`
+   → `MediaRecorder`，录下来的就是**扬声器里真正在响的那条线**；
+3. 每段开头打一次拍板（白闪 + 1 kHz 蜂鸣，同一瞬间），mux 时用它把音频与画面**对齐**——
+   自检会重新量一遍，三段误差 **0.00 / 0.02 / 0.02 s**，不是后期配音。
 
-| 时间 | 内容 | 对应交付要求 |
+### 分段与时间轴
+
+| 时间 | 内容 | 对应题目要求 |
 | --- | --- | --- |
-| 0:00 | 开始页：场景与角色是视觉主体 | 页面形态 |
-| 0:09 | 进入场景：雨后、两盏暖灯、湿街反光 | 待机状态 |
-| 0:12 | 文字互动 1–2 轮：她开口、字幕、表情/动作同步（语气词先出声） | 文字互动 |
-| 0:34 | 角色状态切换：倾听→思考→说话 | 4 种状态 |
-| 0:45 | 提到照片 → 镜头切近景 + **照片静帧推近** | 内容触发的视觉事件 + 多模态 |
-| 1:19 | 提到打雷 → 闪电补光（三段闪）+ 低频滚雷 | 同上，第二类事件 |
-| 1:29 | 语音互动：WAV 伪装麦克风，走真实 STT 通路 | 语音互动 |
-| 1:54 | 她说话时按下麦克风 → **打断**，旧回复作废 | 语音打断 |
-| 2:12 | 注入 LLM 超时 → 明确报错且可恢复 | 失败/降级状态 |
-| 2:20 | 注入 TTS 失败 → 语音降级为字幕 | 失败/降级状态 |
-| 2:29 | 观测面板：provider 切换、故障注入、事件流水、首包/总耗时、台词校正 | 可观测量 |
-| 2:30 | 切到 Mock：无需模型/网络/密钥也能完整走一遍 | 无密钥路径 |
+| 0:00 | **章节卡 A**：主线 · 文字 + 打断 + 降级 + 借电话 → 朋友结局 | — |
+| 0:01.5 | 开始页：场景与角色是视觉主体，不是聊天列表 | 页面形态 |
+| 0:02.5 | 观测面板：Provider 选「云端 DeepSeek」（key 只在进程内存） | 模型可切换 |
+| 0:11.7 | **a) 文字互动**：她先开口，字幕 / 表情 / 动作同步；四状态指示随之切换 | 文字互动·4 状态 |
+| 0:30.9 | **c) 语音打断**：她正说着，按住麦克风插一句话——当前语音立即停、未播队列清空 | **语音打断** |
+| 0:47.4 | 转写结果直接成为这一轮输入（真 STT，不是写死的台词） | 语音互动 |
+| 0:47.8 | 剧情推进：她一层层说出等的是谁、等多久（信息按节点逐级释放） | 多轮连续互动 |
+| 1:25.7 | **d) 剧情分叉**：你问她手机，提出把手机借给她 | 剧情分支 |
+| 1:36.0 | **e) 降级状态**：注入 TTS 失败 → **语音没了、字幕照常、对话不断**，屏幕上给出明确提示 | **失败/降级状态** |
+| 1:41.6 | **d) 多模态演出**：接电话贴片 + 屏幕冷光 + 环境音压低（由剧情节点触发，不是计时器） | **视觉事件** |
+| 1:55.2 | 电话结果：没打通（30% 分支）——这是真实随机，不是钉死的 | 分支真实性 |
+| 2:02.0 | 观测面板：真实 provider、首包/总耗时、事件流水、故障注入入口 | 可观测 |
+| 2:08.1 | 历史记录：这一场真聊过的每一轮都能回看 / 导出 | 会话回放 |
+| 2:33.5 | 收束：21:00 到点，老板娘关灯（**环境变化**：场景转暗） | 背景/镜头/环境变化 |
+| 2:37.8 | **结局静帧**：`ending_friend`「你们交换了名字。她说下次她请。」 | 剧情结局 |
+| 2:47.1 | **章节卡 B**：分支 · 没借电话 → 陌生人结局 | — |
+| 2:48.6 | B 段：同一条街上换一个选择——不问手机、不借，她等到 21:00 自己走 | 第二结局 |
+| 4:11.6 | **结局静帧**：`ending_stranger`「她等到九点，走了」 | 第二结局 |
+| 4:19.6 | **章节卡 C**：分支 · 你先走了 → 提前道别 | — |
+| 4:21.1 | C 段：对话中途你说「那我先走了」→ 立即收束，不挽留 | 第三种结局 |
+| 4:41.3 | 结束 | — |
 
+> B / C 两段是**独立会话**（分支状态在服务端是每会话一份，同一条会话里没法先借再退回去演不借）。
+> 两段的首尾各剪掉了与 A 段完全同质的铺垫轮，章节卡上标注了「与主线重复的开场铺垫已剪」；
+> 剪点都落在每轮结束的 idle 上，**没有任何变速**（`speed=1.0`，无 `setpts` / `atempo`）。
+
+### 复现
+
+```powershell
+# 服务先起来（start.ps1），并在观测面板或 /api/cloud 里填好 DeepSeek key
+.venv\Scripts\python.exe tools\qa\record_demo_v20.py            # 录三段 + 各自 mux
+.venv\Scripts\python.exe tools\qa\record_demo_v20.py --cards    # 重画章节卡 + 拼接 + 自检
+.venv\Scripts\python.exe tools\qa\record_demo_v20.py --check    # 只复检成片
+.venv\Scripts\python.exe tools\qa\record_demo_v20.py --sim      # 不连服务，只验三条故事路径
+.venv\Scripts\python.exe tools\qa\record_demo_v20.py --only A   # 只录某一段
+```
+
+`--check` 的输出即是交付证据（跑一遍就有）：
+
+```
+成片 mira_demo_v20.mp4: 281.32s, 54361 KB
+  段 A 结局帧 @163.1s → 最像 friend.webp（friend 0.498 / stranger 0.193）✓
+  段 B 结局帧 @255.6s → 最像 stranger.webp（friend 0.168 / stranger 0.553）✓
+  段 C 结局帧 @277.3s → 最像 stranger.webp（friend 0.178 / stranger 0.577）✓
+  段 A 音画同步复查：白闪 6.96s / 1kHz 6.98s（差 0.02s）
+  段 B 音画同步复查：白闪 5.76s / 1kHz 5.74s（差 0.02s）
+  段 C 音画同步复查：白闪 5.68s / 1kHz 5.70s（差 0.02s）
+  自检: 通过
+```
+
+验收截图在 `production/reports/demo_v20/shots/`（14 张，逐章节），成片抽帧在 `final_frame_{A,B,C}.png`。

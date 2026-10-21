@@ -170,14 +170,21 @@ class StoryState:
             self.ending = kind
             return Step(node=self.node_id, moved=False, ending=kind, why=why, forced=True)
         if target and target != self.node_id:
-            # 2026-10-22：**强制点不许把剧情往回送**。卡里 20:48 的强制点是
-            # 「必须说出手机没电」，用户可能在第 5 轮就因为一句「要不要打电话」
-            # 提前跳到了 phone_dead（问句加速）——这时候 _fired 里没有 20:48 这条，
-            # 到 20:50 时 forced 会把她从已经走到的 phone_call **拖回 phone_dead**。
-            # 实测回放里 turn7 phone_call → turn8 phone_dead → turn9 phone_call，
-            # 剧情在自己的节点上来回跳，观众看到的就是「她又开始说手机没电」。
-            # 已经发生过的事不再发生：节点访问过就只记 fired、不动人。
-            if target in self.visited:
+            # 2026-10-22（v19 修「剧情反复/自说自话」）：**强制点只许往前走**。
+            # 原来这里只判 `target in visited`，挡不住「被问句加速跳过、但还没访问过
+            # 的节点」。实测借了手机的路径：turn10 call_ok → turn11 release，此时
+            # clock 刚到 20:48，强制点「20:48 phone_dead」把剧情**拖回第一幕**，
+            # phone_dead 的 goto 又按 offered_phone 跳到 phone_offer —— 用户听到的是
+            # 电话打了两遍、她重新说一遍手机没电。这正是「角色自说自话」的来源。
+            # 正确的判据不是"访问过没有"，而是**在节点表里的位置**：强制点只能把
+            # 剧情送到当前节点之后，往前或原地一律只记 fired、不动人。
+            order = [n.get("id") for n in self.story.get("nodes") or []]
+            try:
+                cur_i = order.index(self.node_id)
+                tgt_i = order.index(target)
+            except ValueError:
+                cur_i, tgt_i = 0, 1
+            if tgt_i <= cur_i or target in self.visited:
                 return Step(node=self.node_id, moved=False, why=why, forced=True)
             self.node_id = target
             self.turns_in_node = 0
@@ -213,6 +220,11 @@ class StoryState:
         kind = self.node.get("ending")
         if kind:
             self.ending = kind
+            # 2026-10-22（v19）：进结局就把场景时钟拨到打烊时间。
+            # 结局的前置节点可能因为对话加速提前到达（比如 20:48 就到关灯），
+            # 而 HUD 上的场景时钟还停在 20:48 —— 观众会看到「20:48 就关灯锁门了」。
+            # 结局本来定义在 21:00，这里把时钟补齐，屏幕上的时间才对得上画面。
+            self.minutes = max(self.minutes, self.end_minutes)
         return Step(node=to, moved=True, ending=kind, why=why)
 
     def _accelerate(self, ask_hits: set[str]) -> Step | None:
@@ -334,6 +346,7 @@ class StoryState:
             self.turns_in_node = 0
             self.visited.append(target)
         self.ending = (self.node.get("ending") or "stranger")
+        self.minutes = max(self.minutes, self.end_minutes)
         return Step(node=self.node_id, moved=True, ending=self.ending,
                     why="用户主动说要走")
 

@@ -2633,7 +2633,8 @@ function handleEvent(ev, seq, t0) {
       break;
     case "audio_error":
       S.errors += 1;
-      toast(ev.message || "语音不可用，已降级为字幕");
+      // 6500ms：这是交付时唯一要「看得出降级」的提示，3.2s 在录屏里一闪就没了
+      toast(ev.message || "语音不可用，已降级为字幕", 6500);
       setCaption(ev.text, false);
       speakFallback(ev.text);
       break;
@@ -3432,7 +3433,13 @@ function bind() {
       btn.dataset.state = JSON.stringify({ ...cur, [key]: next });
       btn.classList.toggle("on", next);
       await api("/api/debug/inject", { session_id: S.sid, [key]: next });
-      toast(`${key} → ${next ? "开" : "关"}`);
+      // 中文标签：这行提示会出现在录屏画面里，不能是 "tts_fail → 开" 这种内部键名
+      const INJECT_LABEL = {
+        tts_fail: "语音合成失败", llm_timeout: "模型超时", slow_tts: "语音变慢",
+        gate_fail: "对话闸门拦截", time_fail: "时间校验失败",
+        bad_header: "指令协议异常", bad_header_only: "只吐指令不给台词",
+      };
+      toast(`${INJECT_LABEL[key] || key}：${next ? "已注入" : "已恢复"}`);
     };
   });
 
