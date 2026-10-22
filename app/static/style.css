@@ -232,8 +232,10 @@ html, body {
 }
 .primary:active { transform: scale(.985); }
 .gate-note { margin-top: 12px; font-size: 12px; color: rgba(255, 255, 255, .4); text-align: center; }
+/* auto 链退到 Mock 时这句话必须能看见，否则用户会以为背后有模型在说话 */
+.gate-note.mock-note { color: rgba(255, 214, 120, .9); }
 
-/* ---------------------------------------------------------------- 搴曢儴瀛楀箷 + 杈撳叆 */
+/* ---------------------------------------------------------------- 底部分字幕 + 输入 */
 .bottom {
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 0 14px calc(12px + var(--safe-b));

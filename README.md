@@ -18,14 +18,25 @@
 
 ## 1. 快速开始
 
-### 1.1 先跑起来（零下载，Mock 模式）
+### 1.1 先跑起来（不需要自己准备模型）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 # 或者双击 start.bat
 ```
 
-打开 <http://127.0.0.1:8787/>，点「进入场景」。首次运行自动建 `.venv`、装依赖。
+打开 <http://127.0.0.1:8787/>，点「进入场景」。首次运行会自动建 `.venv`、装依赖。
+
+**首次运行需要联网**，三件事会下载东西：
+
+| 时机 | 下载什么 | 大小 |
+| --- | --- | --- |
+| `start.ps1` | `pip install -r requirements.txt`（fastapi / uvicorn / faster-whisper / av …） | 几十 MB |
+| 第一次用麦克风 | `faster-whisper small` 权重（落盘 `models/whisper/`） | **约 464 MB** |
+| 每一次开口 | edge-tts 在线合成（免费、无 Key） | 流式，不落盘 |
+
+断网时：文字输入 + Mock 对话仍然可用；麦克风（STT）和语音合成（TTS）这两条链路不可用，
+界面会降到「字幕 + 浏览器 `speechSynthesis`」。想省掉 STT 那 464 MB，可以先不点麦克风。
 
 **这个仓库不包含模型权重和推理二进制**：`.gitignore` 排除了 `models/`
 （开发机上约 82 GB）和 `tools/llm/llama/`（llama.cpp + CUDA 运行时约 1.2 GB）。
@@ -537,11 +548,18 @@ cards/mira_cafe/assets/
 自动化测试。先装测试依赖（运行依赖里刻意不含它们）：
 
 ```powershell
-.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
-然后起服务（`start.ps1`，或 `LLM_MODE=mock uvicorn app.main:app --port 8787`），逐条跑：
+然后起服务。用 `start.ps1` 最省事；手动起也可以——**PowerShell 里环境变量是 `$env:`，
+`LLM_MODE=mock uvicorn ...` 这种是 bash 写法，Windows PowerShell 5.1 直接报错**：
+
+```powershell
+$env:LLM_MODE="mock"; .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8787
+```
+
+逐条跑：
 
 ```powershell
 # 端到端：流完整性 / 指令枚举收敛 / 关键词事件 / 打断 / STT 中文转写
@@ -775,11 +793,11 @@ cards/mira_cafe/assets/
 
 ```powershell
 # 服务先起来（start.ps1），并在观测面板或 /api/cloud 里填好 DeepSeek key
-.venv\Scripts\python.exe tools\qa\record_demo_v20.py            # 录三段 + 各自 mux
-.venv\Scripts\python.exe tools\qa\record_demo_v20.py --cards    # 重画章节卡 + 拼接 + 自检
-.venv\Scripts\python.exe tools\qa\record_demo_v20.py --check    # 只复检成片
-.venv\Scripts\python.exe tools\qa\record_demo_v20.py --sim      # 不连服务，只验三条故事路径
-.venv\Scripts\python.exe tools\qa\record_demo_v20.py --only A   # 只录某一段
+.\.venv\Scripts\python.exe tools\qa\record_demo_v20.py            # 录三段 + 各自 mux
+.\.venv\Scripts\python.exe tools\qa\record_demo_v20.py --cards    # 重画章节卡 + 拼接 + 自检
+.\.venv\Scripts\python.exe tools\qa\record_demo_v20.py --check    # 只复检成片
+.\.venv\Scripts\python.exe tools\qa\record_demo_v20.py --sim      # 不连服务，只验三条故事路径
+.\.venv\Scripts\python.exe tools\qa\record_demo_v20.py --only A   # 只录某一段
 ```
 
 `--check` 的输出即是交付证据（跑一遍就有）：成片时长/体积、三段结局帧的匹配度、

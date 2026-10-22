@@ -71,11 +71,20 @@ function Wait-Url([string]$url, [int]$timeoutSec, [string]$label) {
     return $false
 }
 
-function Stop-ByPort([int]$p) {
+function Stop-ByPort([int]$p, [switch]$OnlyOwned) {
     $conns = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
     foreach ($c in $conns) {
         try {
             $proc = Get-Process -Id $c.OwningProcess -ErrorAction Stop
+            # -Stop must not kill somebody else's server that happens to share the
+            # port (LM Studio on :8080, a friend's uvicorn on :8787, ...). Only the
+            # process whose image lives inside this project is ours to kill.
+            $path = $null
+            try { $path = $proc.Path } catch { }
+            if ($OnlyOwned -and $path -and (-not $path.StartsWith($PSScriptRoot))) {
+                Write-Host ("  :{0} is held by {1} (pid {2}) outside this project - left alone" -f $p, $proc.ProcessName, $proc.Id) -ForegroundColor Yellow
+                continue
+            }
             Write-Host ("  stopping pid {0} ({1}) on :{2}" -f $proc.Id, $proc.ProcessName, $p)
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         } catch { }
@@ -115,9 +124,9 @@ if ($Port -le 0) {
 # ------------------------------------------------------------------ stop -----
 if ($Stop) {
     Write-Host "[mira] stopping the app on :$Port"
-    Stop-ByPort $Port
+    Stop-ByPort $Port -OnlyOwned
     Write-Host "[mira] stopping the 4B model on :8080"
-    Stop-ByPort 8080
+    Stop-ByPort 8080 -OnlyOwned
     # llama-server can outlive its listener when killed mid-request: sweep by name,
     # but only the copy that shipped inside this project.
     Get-Process llama-server -ErrorAction SilentlyContinue |
@@ -127,7 +136,7 @@ if ($Stop) {
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
         }
     Write-Host "[mira] stopping the neural TTS on :8790"
-    Stop-ByPort 8790
+    Stop-ByPort 8790 -OnlyOwned
     Write-Host "[mira] done. ComfyUI on :8188 is left alone (close it yourself, or use -FreeGpu)."
     exit 0
 }
@@ -251,13 +260,21 @@ $vramUsed = Get-VramUsedMB
 $gpuWarn = $false
 if ($vramUsed -gt 9000) {
     $gpuWarn = $true
+    # Do not blame ComfyUI by default: on this machine the status table said
+    # "comfyui off" right under a warning that blamed ComfyUI. Check the port.
+    $comfyHolding = Test-Port 8188
     Write-Host ""
     Write-Host "  ****************************************************************" -ForegroundColor Yellow
-    Write-Host ("  GPU is BUSY: {0} MiB of 12282 MiB already used." -f $vramUsed) -ForegroundColor Yellow
-    Write-Host "  ComfyUI on :8188 is most likely the culprit. While it holds the" -ForegroundColor Yellow
-    Write-Host "  card this demo degrades: model -> Mock, first audio 30-40s" -ForegroundColor Yellow
-    Write-Host "  instead of 3-7s. Close ComfyUI, or rerun with:" -ForegroundColor Yellow
-    Write-Host "      .\start.ps1 -FreeGpu" -ForegroundColor Yellow
+    Write-Host ("  GPU is BUSY: {0} MiB already used by some process." -f $vramUsed) -ForegroundColor Yellow
+    Write-Host "  While it holds the card this demo degrades: model -> Mock," -ForegroundColor Yellow
+    Write-Host "  first audio 30-40s instead of 3-7s." -ForegroundColor Yellow
+    if ($comfyHolding) {
+        Write-Host "  ComfyUI is listening on :8188 - close it, or rerun with:" -ForegroundColor Yellow
+        Write-Host "      .\start.ps1 -FreeGpu" -ForegroundColor Yellow
+    } else {
+        Write-Host "  :8188 is NOT listening, so this is some other process." -ForegroundColor Yellow
+        Write-Host "  Find it with:  nvidia-smi" -ForegroundColor Yellow
+    }
     Write-Host "  ****************************************************************" -ForegroundColor Yellow
     Write-Host ""
 }

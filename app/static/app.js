@@ -2666,6 +2666,17 @@ function handleEvent(ev, seq, t0) {
       if (ev.provider && ev.provider !== S.provider) {
         S.provider = ev.provider;
         addMetric("模型", ev.provider);
+        /* 「界面必须看得见」不能只写进观测面板（它默认是隐藏的）：真降级到 Mock 时，
+           用户的感受是「她正常回话」，没有任何理由去点观测。所以主界面也要说。
+           这是唯一诚实的信号——/api/health 的 chain 是**配置**的链，不是可用性
+           （llama 永远在链里，哪怕 :8080 上什么都没有）。 */
+        if (ev.provider === "mock") {
+          const note = document.querySelector(".gate-note");
+          if (note && !note.classList.contains("mock-note")) {
+            note.textContent = "Mock 模式：本地模型没起，对话按剧本推进（流程与结局完整）· 点麦克风可打断她";
+            note.classList.add("mock-note");
+          }
+        }
       }
       $("latency").textContent =
         `首包 ${ev.first_audio_ms ?? S.lastFirstAudio ?? "-"}ms · 总 ${ev.ms}ms`;
@@ -3519,7 +3530,10 @@ async function bootProvider() {
     }
     const note = document.querySelector(".gate-note");
     if (note && h.mode === "mock") {
-      note.textContent = "服务端当前是 Mock 模式（本地模型没起也能完整体验）· 点麦克风可打断她";
+      /* 只有显式 LLM_MODE=mock 能在 boot 时就确定。auto 链是否真的退到 Mock
+         在这里判断不了（见 done 事件里的说明），交给首轮 done.provider。 */
+      note.textContent = "Mock 模式：本地模型没起，对话按剧本推进（流程与结局完整）· 点麦克风可打断她";
+      note.classList.add("mock-note");
     }
     syncCloudRow();
   } catch (e) {
