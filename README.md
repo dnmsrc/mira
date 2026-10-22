@@ -48,9 +48,9 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 > 这不是「残缺版」，是刻意设计的可复现兜底。面试演示最大的风险是网络/额度/环境，
 > Mock 保证换任何一台机器都能看到完整流程，而且每一步都能在观测面板里核对。
 
-### 1.2 接真实模型（可选，需自备一个 OpenAI 兼容后端）
+### 1.2 接真实模型（可选：本地 OpenAI 兼容后端，或云端 DeepSeek API）
 
-对话由谁生成，只看 `LLM_MODE` 指向的那一档能不能连上。四个变量决定去哪找：
+对话由谁生成，只看 `LLM_MODE` 指向的那一档能不能连上。本地档由四个变量决定去哪找：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -59,7 +59,10 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 | `LLAMA_MODEL` | `qwen3.8-4b` | 请求里 `model` 字段的值，**必须和后端里真实的模型名一致** |
 | `STRATA_URL` / `STRATA_MODEL` | `:1234` / `qwen3.8-flash-next-…` | `strata` 档（可选，25B） |
 
-三种接法任选：
+> 云端档（`cloud`）**不吃环境变量**：key 只能在运行时通过观测面板或 `/api/cloud` 填入
+> （刻意的，见下面 C），所以不需要、也不应该把它写进任何配置文件。
+
+四种接法任选——A / B 是本地模型，C 是云端 API，D 是纯演示兜底：
 
 **A. 一键下载**（Windows + NVIDIA，约 3.4 GB）
 
@@ -110,7 +113,50 @@ $env:LLM_MODE    = "llama"
 `连接失败` → 改 `LLAMA_URL`（以及别带 `/v1`）；后端一条访问记录都没有 → 程序连的是
 默认 `:8080`，环境变量没设进**启动的那个进程**。
 
-**C. 什么都不装** —— 就是 1.1 的 Mock 模式。
+**C. 云端 DeepSeek API（不装模型，按 token 计费，质量最好）**
+
+没有 GPU、不想下几个 GB 权重，又想要比本地 4B 明显更好的措辞时走这条。DeepSeek 的
+API 是 OpenAI 兼容的，代码里对应 `DeepSeekLLM`（默认 `deepseek-chat`）。Key 从
+[platform.deepseek.com](https://platform.deepseek.com/) 申请。
+
+**配置不改任何文件、不设环境变量**，服务起来之后在观测面板里完成：
+
+1. 打开 `http://127.0.0.1:8787/debug`（或主界面右上角「观测」）；
+2. Provider 下拉选「云端 DeepSeek」，会多出一条 key 输入行；
+3. 粘贴 key →「连接」。服务端**先发一个最小请求真验一次**：key 无效 / 网络不通会
+   返回具体原因、不保存；验过才生效，并自动把当前会话切到 cloud 档。
+
+也可以直接调 API（和界面完全等价）：
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8787/api/cloud -Method Post -ContentType "application/json" -Body '{"key":"sk-..."}'
+# 换模型（如 deepseek-reasoner）：Body 写成 '{"key":"sk-...","model":"deepseek-reasoner"}'
+```
+
+（用 `Invoke-RestMethod` 而不是 `curl` 是刻意的：Windows PowerShell 5.1 里 `curl` 是
+`Invoke-WebRequest` 的别名，而且 5.1 给原生程序传 JSON 字面参数会剥掉双引号。）
+
+Key 的处置方式是刻意的（对应题目「无私人密钥也能跑」的要求）：
+
+- **只存在服务进程内存**：不写磁盘、不进 `.env`、不回传前端（页面只显示 `sk-ab***yz` 掩码）；
+- **重启即失效**：所以仓库里、配置文件里永远不可能有 key。这也是它**不能走环境变量**
+  的原因——只能在运行时通过观测面板或 `/api/cloud` 填；
+- 选了 cloud 但没配 key：每轮自动回落本地链，页面 toast「未填 key，已回落本地/自动」，
+  不会把对话打挂；
+- 想撤掉：观测面板点「清除」，或对 `/api/cloud` 发 `DELETE`。
+
+验证（和本地同样的思路——别信「界面会说话」）：
+
+| 看哪 | 期望 |
+| --- | --- |
+| `/api/health` | `"cloud": {"configured": true, "model": "deepseek-chat"}` |
+| 说一句后的 `done` 事件 / 观测页 | `"provider": "cloud"` |
+| 观测面板 key 行 | 显示「已配置」而不是「未配置」 |
+
+两个使用上的注意：这条链路**每轮对话都走外网**，断网时整档不可用（会自动回落
+本地/Mock）；额度按 DeepSeek 官方价格计费，演示前确认账户有余额。
+
+**D. 什么都不装** —— 就是 1.1 的 Mock 模式。
 
 本项目实测用的是 [`empero-ai/Qwen3.8-4B-Distill-GGUF`](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)
 的 `Q4_K_M`（2.8 GB，Apache-2.0）。**两个坑先说在前面**：
