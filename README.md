@@ -50,7 +50,15 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 ### 1.2 接真实模型（可选，需自备一个 OpenAI 兼容后端）
 
-对话由谁生成，只看 `:8080` 上有没有一个实现了 `POST /v1/chat/completions` 的本地服务。
+对话由谁生成，只看 `LLM_MODE` 指向的那一档能不能连上。四个变量决定去哪找：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `LLM_MODE` | `auto` | `auto` / `llama` / `strata` / `mock` / `cloud` |
+| `LLAMA_URL` | `http://127.0.0.1:8080` | `llama` 档的后端地址，**不要带 `/v1`**（程序自己拼） |
+| `LLAMA_MODEL` | `qwen3.8-4b` | 请求里 `model` 字段的值，**必须和后端里真实的模型名一致** |
+| `STRATA_URL` / `STRATA_MODEL` | `:1234` / `qwen3.8-flash-next-…` | `strata` 档（可选，25B） |
+
 三种接法任选：
 
 **A. 一键下载**（Windows + NVIDIA，约 3.4 GB）
@@ -61,10 +69,46 @@ powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1   # 起 :8080
 $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
+这条路不用设 `LLAMA_MODEL`：llama.cpp 不校验 `model` 字段，默认的 `127.0.0.1:8080`
+和 `qwen3.8-4b` 直接对得上。
+
 **B. 用你已有的 Ollama / LM Studio / vLLM**
-让服务监听 `127.0.0.1:8080`；端口不同就设完整 URL（变量名是 `LLAMA_URL`，不是 `*_BASE_URL`）：
-`$env:LLAMA_URL="http://127.0.0.1:11434"` —— **不要带 `/v1`**，程序自己拼 `/v1/chat/completions`。
-然后 `$env:LLM_MODE="llama"` 启动。
+
+这三家都会**严格校验请求里的 `model` 字段**，名字不认识就直接 404（llama.cpp 不校验，
+所以 A 那条路不会遇到）。所以「接上去」永远是两个动作：**改地址 + 改模型名**。
+
+以 Ollama 为例（默认 `11434`）：
+
+```powershell
+ollama list                        # 输出第一列就是模型名，照抄
+$env:LLAMA_URL   = "http://127.0.0.1:11434"
+$env:LLAMA_MODEL = "qwen2.5:7b"    # ← 换成 ollama list 里你的那个
+$env:LLM_MODE    = "llama"
+powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+LM Studio 同理，但**注意端口冲突**：LM Studio 默认监听 `:1234`，而 `:1234` 在本项目里
+是 `strata` 档（25B）的默认地址。用 LM Studio 时把 `LLAMA_URL` 显式指过去，不要留 `auto`
+（`auto` 会把它当 25B 撞，模型名对不上又是 404）：
+
+```powershell
+$env:LLAMA_URL   = "http://127.0.0.1:1234"
+$env:LLAMA_MODEL = "qwen/qwen3-4b"  # LM Studio 里模型 id 的完整写法，别写短名
+$env:LLM_MODE    = "llama"
+```
+
+**接完必须验一下**——这一点很重要，因为连不上时程序**静默退到 Mock**：界面完全正常，
+话说得也像样，实际上一个字都不是模型写的。三个地方任选其一核对：
+
+| 看哪 | 期望 | 说明 |
+| --- | --- | --- |
+| `/api/health` 的 `llm_endpoint` | 是你刚设的 url 和 model | 还是默认值 = 环境变量没传进去 |
+| 说一句后 `done` 事件 / 观测页 | `"provider": "llama"` | 写着 `mock` 就是**没接上** |
+| 你的后端窗口 | 有 `POST /v1/chat/completions` 记录 | 没有 = 请求根本没发到这个端口 |
+
+对应三种最常见的失败：`HTTP 404 model 'xxx' not found` → 改 `LLAMA_MODEL`；
+`连接失败` → 改 `LLAMA_URL`（以及别带 `/v1`）；后端一条访问记录都没有 → 程序连的是
+默认 `:8080`，环境变量没设进**启动的那个进程**。
 
 **C. 什么都不装** —— 就是 1.1 的 Mock 模式。
 
@@ -76,7 +120,9 @@ $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 - 它是推理模型，原始输出带 `<think>` 块。`app/providers.py` 里已有剥离与首 token 预算。
 
 换别的模型也能跑（任何 OpenAI 兼容后端都可以），只是措辞质量会变：提示词与闸门是按
-4B 调的，往上换 7B/14B 通常更好，换到 1B 以下会明显退化。
+4B 调的，往上换 7B/14B 通常更好，换到 1B 以下会明显退化。**换模型时记得同步
+`LLAMA_MODEL`**，否则就是上面那种 404 —— 提示词是给 4B 写的，但请求发出去的第一个
+拦路虎永远是模型名。
 
 启动器会按顺序探测三件事，**缺任何一件都还能跑**：
 

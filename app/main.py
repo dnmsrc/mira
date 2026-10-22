@@ -37,6 +37,11 @@ MEDIA.mkdir(parents=True, exist_ok=True)
 
 LLM_MODE = os.environ.get("LLM_MODE", "auto").lower()      # mock | llama | strata | auto
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
+# 换后端（Ollama / LM Studio / vLLM）时**必须**一起改模型名：这些服务会严格校验
+# `model` 字段，不认识就 404。llama.cpp 不校验（任何名字都能过），所以本地一键档
+# 一直没暴露这个问题——直到有人照 README 接上 Ollama，拿到的是一条
+# `model 'qwen3.8-4b' not found`，然后静默退到 Mock：界面正常，台词全是剧本。
+LLAMA_MODEL = os.environ.get("LLAMA_MODEL", "qwen3.8-4b")
 STRATA_URL = os.environ.get("STRATA_URL", "http://127.0.0.1:1234")
 STRATA_MODEL = os.environ.get("STRATA_MODEL", "qwen3.8-flash-next-iq2_xs-256k-vision")
 WHISPER_SIZE = os.environ.get("WHISPER_SIZE", "small")
@@ -144,7 +149,7 @@ def stream_url(text: str, emotion: str, index: int) -> str:
 
 LLMS = {
     "mock": providers.MockLLM(),
-    "llama": providers.LlamaLLM(LLAMA_URL),
+    "llama": providers.LlamaLLM(LLAMA_URL, LLAMA_MODEL),
     "strata": providers.StrataLLM(STRATA_URL, STRATA_MODEL),
 }
 # 「自动档」：优先 25B（Strata），不可用退 4B（llama），都不可用退 Mock。
@@ -2549,6 +2554,22 @@ async def inject(payload: dict):
     return {"ok": True, "inject": s.inject, "tts_live": _live_status()}
 
 
+def _llm_endpoints() -> dict:
+    """当前配置指向哪个地址、用哪个模型名 —— 接第三方后端时唯一的自检入口。
+
+    为什么要这个：换后端最常见的两种错法是「URL 写错」和「模型名不对」，两种都会
+    被 FallbackLLM 静默兜住（界面照常说话，只是全走 Mock）。这里把实际生效的
+    url + model 原样吐出来，对着 `curl <url>/v1/models` 一比就知道差在哪。
+    """
+    def one(key: str) -> dict:
+        p = LLMS.get(key)
+        while getattr(p, "chain", None):        # FallbackLLM 在真正 provider 外面包了一层
+            p = p.chain[0]
+        return {"url": getattr(p, "base_url", ""), "model": getattr(p, "model", "")}
+
+    return {k: one(k) for k in ("llama", "strata")}
+
+
 @app.get("/api/health")
 async def health():
     """健康检查：一台新机器上「缺了什么、降到了哪一档」必须在这里一眼看到。
@@ -2574,6 +2595,8 @@ async def health():
         _voice_probe = {"error": f"{type(exc).__name__}: {exc}"}
     return {
         "ok": True, "llm": llm_for(LLM_MODE).name, "mode": LLM_MODE, "voice": tts.voice,
+        # 实际生效的地址与模型名：接 Ollama / LM Studio 时照这里核对，别照文档猜。
+        "llm_endpoint": _llm_endpoints(),
         "tts_engine": tts.engine, "tts_last_engine": getattr(tts, "last_engine", ""),
         "voice_card": _voice_probe,
         # 自动链的**真实**成员：前端那句「实际链：…」由它拼，不再手写死 25B。
@@ -2854,22 +2877,28 @@ async def warm_tts() -> None:
             print(f"[warm] selector failed: {type(exc).__name__}: {exc}", flush=True)
 
     async def _warm_llm() -> None:
-        """4B 的系统提示前缀进 KV cache，同时让降级链记住哪个 provider 活着。
+        """把系统提示前缀压进 KV cache，同时让降级链记住哪个 provider 活着。
 
-        用 auto 而不是 llama：链里第一个是 Strata，演示机上它常常没起，预热这一发
-        正好把「谁活着」记下来（FallbackLLM 粘住成功项 + 冷却死掉的），
-        用户说的第一句话就不用再白等那一次失败探测。
+        auto 档：链里第一个是 Strata，演示机上它常常没起，预热这一发正好把
+        「谁活着」记下来（FallbackLLM 粘住成功项 + 冷却死掉的），用户说的第一句话
+        就不用再白等那一次失败探测。
+        显式指定了 llama/strata 时**按指定档预热**——以前这里写死 auto，于是
+        `LLM_MODE=llama` 的机器上日志仍打 `auto -> strata`，接第三方后端的人会以为
+        自己配的那档没生效（2026-10-22 实测踩到）。
         """
+        # cloud 档不预热（预热会真的花云端 token），落到 auto 即可。
+        pick = LLM_MODE if LLM_MODE in ("llama", "strata") else "auto"
+        chain = llm_for(pick) if pick != "auto" else LLMS["auto"]
         try:
             msgs = [
                 {"role": "system", "content": persona.render_system_prompt(0)},
                 {"role": "user", "content": "你好"},
             ]
-            async for _ in LLMS["auto"].stream(msgs):
+            async for _ in chain.stream(msgs):
                 pass
-            print(f"[warm] llm: auto -> {LLMS['auto'].last}", flush=True)
+            print(f"[warm] llm: {pick} -> {getattr(chain, 'last', chain.name)}", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[warm] llm: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[warm] llm: {pick} {type(exc).__name__}: {exc}", flush=True)
 
     async def _warm_presets() -> None:
         """把预设台词预合成进 media/tts 缓存：命中路径要「说完就出声」。

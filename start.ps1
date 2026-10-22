@@ -109,6 +109,17 @@ function Write-Status([string]$name, [bool]$ok, [string]$detail) {
 $llmScript = Join-Path $PSScriptRoot "tools\llm\start_llm.ps1"
 $modelFile = Join-Path $PSScriptRoot "models\llm\Qwen3.8-4B-Q4_K_M.gguf"
 
+# The user may point the app at their own OpenAI-compatible backend instead of the
+# bundled 4B:
+#     $env:LLAMA_URL="http://127.0.0.1:11434"; $env:LLAMA_MODEL="qwen2.5:7b"
+# If that port is already serving, do NOT launch the bundled model as well: it would
+# take VRAM for nothing (the app keeps talking to the user's backend either way).
+$llmPort = 8080
+if ($env:LLAMA_URL) {
+    try { $llmPort = ([uri]$env:LLAMA_URL).Port } catch { }
+}
+$externalLlm = ($llmPort -ne 8080)
+
 function Start-Model {
     Start-Process -FilePath "powershell" `
         -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $llmScript `
@@ -149,7 +160,7 @@ if (Test-Health $Port) {
     # this branch exit before the model step, handing the user an interface with no
     # model behind it: every turn then fails with "llama-server connection failed",
     # which reads as "she stopped talking". So check the model before opening.
-    if (-not ((Test-Port 1234) -or (Test-Port 8080))) {
+    if (-not ((Test-Port 1234) -or (Test-Port 8080) -or ($externalLlm -and (Test-Port $llmPort)))) {
         if ((Test-Path $llmScript) -and (Test-Path $modelFile)) {
             Write-Host "[mira] WARNING: app is up but NO model is listening - starting the 4B model ..." -ForegroundColor Yellow
             Start-Model
@@ -188,7 +199,7 @@ $mode = if ($env:LLM_MODE) { $env:LLM_MODE } else { "auto" }
 
 # ------------------------------------------------------------------ model ----
 $modelWanted = $false
-if ((Test-Port 1234) -or (Test-Port 8080)) {
+if ((Test-Port 1234) -or (Test-Port 8080) -or ($externalLlm -and (Test-Port $llmPort))) {
     $modelWanted = $true
 } elseif ((Test-Path $llmScript) -and (Test-Path $modelFile)) {
     $modelWanted = $true
@@ -203,6 +214,9 @@ if ((Test-Port 1234) -or (Test-Port 8080)) {
 $modelReady = $false
 if (Test-Port 1234) {
     $modelReady = $true   # LM Studio / other: assume whatever is there is usable
+} elseif ($externalLlm -and (Test-Port $llmPort)) {
+    $modelReady = $true
+    Write-Host "[mira] external LLM on :$llmPort (from LLAMA_URL) - bundled 4B not started"
 } elseif ($modelWanted) {
     Write-Host "[mira] waiting for the 4B model to load (first run 5-15s) ..."
     Write-Host "       (leave this window open - do not double-click start.bat again)"
@@ -299,6 +313,10 @@ $modelOk = $false
 if (Test-Port 1234) {
     $modelDetail = "strata :1234"
     $modelOk = $true
+} elseif ($externalLlm -and (Test-Port $llmPort)) {
+    $modelOk = $modelReady
+    $lmName = if ($env:LLAMA_MODEL) { $env:LLAMA_MODEL } else { "qwen3.8-4b (default)" }
+    $modelDetail = ("external LLM :{0} (LLAMA_URL, model {1})" -f $llmPort, $lmName)
 } elseif (Test-Port 8080) {
     $modelOk = $modelReady
     if ($modelOk) { $modelDetail = "llama.cpp 4B :8080 ready" }
