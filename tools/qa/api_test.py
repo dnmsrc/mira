@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8787"
-ROOT = Path(r"D:\interview\mira")
+ROOT = Path(__file__).resolve().parents[2]
 PASS, FAIL = [], []
 
 
@@ -74,8 +74,9 @@ def main():
     check("open turn offers suggestions to move on",
           any(e["t"] == "suggest" and e.get("items") for e in ev), str(kinds))
     check("open turn ends with done", kinds[-1] == "done", str(kinds[-3:]))
+    # v14 卡包已删除 last_train 事件；开场 directive 也不带 event 键，故用 .get 判空。
     check("open turn has no last_train event (content-triggered)",
-          not any(e["t"] == "directive" and e["directive"]["event"] == "last_train" for e in ev))
+          not any(e["t"] == "directive" and e["directive"].get("event") == "last_train" for e in ev))
     check("every event carries the same seq", len({e.get("seq") for e in ev}) == 1)
     print(f"       turn wall time {dt*1000:.0f} ms, events {len(ev)}")
 
@@ -118,8 +119,8 @@ def main():
     ev3, _ = stream_turn(sid, "你还在吗", kind="user")
     check("new turn after interrupt has larger seq", ev3[0]["seq"] > seq_before, f"{ev3[0]['seq']} vs {seq_before}")
 
-    # STT with the baked sample utterance
-    sample = ROOT / "app" / "static" / "assets" / "audio" / "sample_user.wav"
+    # STT with the baked sample utterance（素材在卡包目录，v14 之后不再放 app/static）
+    sample = ROOT / "cards" / "mira_cafe" / "assets" / "audio" / "sample_user.wav"
     boundary = "----mira"
     data = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"u.wav\"\r\n"
             f"Content-Type: audio/wav\r\n\r\n").encode() + sample.read_bytes() + \

@@ -6,11 +6,14 @@ checks three invariants:
 
 1. swapping the emotion sprite changes **nothing outside the character alpha**;
 2. a pose swap without a camera move still touches only the character area;
-3. a camera move transforms the whole .stage (background + character share one
-   transform), so the two layers can never drift apart.
+3. the camera rescale stays OFF (it was removed on 2026-10-20 because rescaling the
+   whole stage every frame is what made the picture "flash"); what must hold is that
+   plate and sprite still live in the same .stage, so any future integer-pixel pan
+   cannot drift the two layers apart;
+4. scene=lights_dim really switches the environment layer to the dimmed look.
 
-Why "outside the alpha" instead of the old "less than 2% of the frame": the 11
-state sprites are generated one by one, so the *shading across her body* differs
+Why "outside the alpha" instead of the old "less than 2% of the frame": the 12
+states are generated one by one, so the *shading across her body* differs
 slightly between two states even at the same pose. That difference is legitimate
 (it is the character layer), while the room behind her must be pixel-identical.
 The old threshold conflated the two and would either fail on good assets or pass
@@ -27,7 +30,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(r"D:\interview\mira")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "production" / "reports" / "layers"
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8787"
 VIEW = (780, 1688)          # 390x844 @ device_scale_factor=2
@@ -176,9 +179,9 @@ def main() -> int:
               f"角色覆盖区之外变了 {frac*100:.3f}%（阈值 0.5%）bbox={box}", flush=True)
 
         # 2. pose without camera: 同样只允许角色层变化
-        page.evaluate("() => window.__mira.applyDirective({action: 'show_photo'})")
+        page.evaluate("() => window.__mira.applyDirective({action: 'lean_in'})")
         page.wait_for_timeout(800)
-        frame, frame_plate = grab_pair(page, "03_show_photo")
+        frame, frame_plate = grab_pair(page, "03_lean_in")
         bg = float((np.abs(base_plate - frame_plate).mean(axis=2) > 2.0).mean())
         fp2 = fp | footprint(frame, frame_plate)
         frac, box = diff_outside(base, frame, fp2)
@@ -187,7 +190,10 @@ def main() -> int:
         print(f"[{status}] pose swap (no camera): 背景板变了 {bg*100:.4f}%，"
               f"角色之外变了 {frac*100:.3f}%（阈值 0.5%）bbox={box}", flush=True)
 
-        # 3. camera: one transform on the stage that contains both layers
+        # 3. 镜头/环境变化：2026-10-20 起推拉（scale）刻意取消（整台舞台逐帧重采样
+        #    就是"说话时闪"的根源），所以这里断言的是**没有 transform**；真正要守的是
+        #    两层仍在同一个 .stage 里（将来若加整数像素平移，两层也不会错位），
+        #    以及 lights_dim 真的把环境层切到暗场。
         page.evaluate("() => window.__mira.applyDirective({scene: 'window_close'})")
         page.wait_for_timeout(1400)
         frame = grab(page, "04_window_close")
@@ -200,11 +206,21 @@ def main() -> int:
                       spriteInside: inStage('#charA')};
             }"""
         )
-        status = "PASS" if cam["transform"] not in ("none", "matrix(1, 0, 0, 1, 0, 0)") \
-            and cam["plateInside"] and cam["spriteInside"] else "FAIL"
+        no_scale = cam["transform"] in ("none", "matrix(1, 0, 0, 1, 0, 0)")
+        status = "PASS" if no_scale and cam["plateInside"] and cam["spriteInside"] else "FAIL"
         ok &= status == "PASS"
-        print(f"[{status}] camera: stage transform={cam['transform'][:42]} "
+        print(f"[{status}] camera off (no rescale): stage transform={cam['transform'][:42]} "
               f"plate/sprite share stage={cam['plateInside']}/{cam['spriteInside']}", flush=True)
+
+        # 4. 环境变化：lights_dim 必须真的切到暗场（这是题目要求的"背景/环境变化"）
+        page.evaluate("() => window.__mira.applyDirective({scene: 'lights_dim'})")
+        page.wait_for_timeout(1000)
+        dim_on = page.evaluate(
+            "() => document.getElementById('dim').classList.contains('lights-dim')"
+        )
+        status = "PASS" if dim_on else "FAIL"
+        ok &= status == "PASS"
+        print(f"[{status}] lights_dim: #dim lights-dim class={dim_on}", flush=True)
 
         ctx.close()
         browser.close()

@@ -6,11 +6,14 @@ same path a human uses: getUserMedia -> MediaRecorder -> /api/stt -> turn.
 Run: .venv\\Scripts\\python.exe tools\\qa\\mic_test.py
 """
 import sys
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 URL = "http://127.0.0.1:8787/"
-WAV = r"D:\interview\mira\app\static\assets\audio\sample_user.wav"
-SHOT = r"D:\interview\mira\docs\review\demo\mic_test.png"
+ROOT = Path(__file__).resolve().parents[2]
+WAV = str(ROOT / "cards" / "mira_cafe" / "assets" / "audio" / "sample_user.wav")
+SHOT = str(ROOT / "docs" / "_shots" / "mic_test.png")
+Path(SHOT).parent.mkdir(parents=True, exist_ok=True)
 HOLD_MS = 3200
 
 logs, reqs = [], []

@@ -1,11 +1,16 @@
 # Mira · 实时互动场景（72 小时实验）
 
-暴雨刚停的夜里，一家即将打烊的咖啡馆。Mira 穿着琥珀色雨衣坐在窗边，在等一个两年没见的人，
-而她的手机从七点起就没电了。你可以打字或按住麦克风和她说话，她**会开口（语音 + 字幕）、
-会变表情、会做动作、会换镜头（打烊关灯）、会因为你这句话触发一段演出（把手机借给她之后的那通电话 / 雷闪）**；
-她说话时你随时可以开口打断。聊到 21:00 打烊，故事自然收束到三个结局之一。
+暴雨刚停的夜里，一家即将打烊的咖啡馆。Mira 坐在窗边等一个人——她的手机从七点起就没电了。
+你可以打字，或按住麦克风和她说话。她**会开口（语音 + 字幕）、会变表情、会做动作、会换镜头
+（打烊关灯）、会因为你这句话触发一段演出（把手机借给她之后的那通电话 / 雷闪）**，
+她说话时你随时可以打断。场景时钟 20:30 走到 21:00，剧情收束到三个结局之一。
 
-不是聊天列表：整屏都是场景和角色，交互入口只是一条字幕区 + 一个麦克风。
+不是聊天列表：整屏都是场景和角色，交互入口只是一条字幕区 + 一个输入坞。
+
+> **这个仓库里有什么**：源码（`app/`）、运行必需的卡与素材（`cards/`）、设计文档（`docs/`）、
+> 题目要求交付的演示录屏（`production/`）。
+> 开发期的验收截图、抽帧、录屏原始分段、逐日计划与评审记录**不在仓库里**——
+> 需要时用 `tools/qa/` 下的脚本重新生成。
 
 ![首屏](docs/preview.png)
 
@@ -14,28 +19,31 @@
 ## 1. 快速开始
 
 ```powershell
-# 一条命令：建 venv、装依赖、起服务、开浏览器（首次约 2-3 分钟，之后 <20s）
+# 一条命令：建 venv、装依赖、按需拉起本地模型、起服务、开浏览器
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 # 或者双击 start.bat
 ```
 
 打开 <http://127.0.0.1:8787/>，点「进入场景」。
 
-- **默认自动选择 provider**：`start.ps1` 会先看 8080 上有没有本地模型；没有就用
-  `tools\llm\llama\llama-server.exe` 把 **Qwen3.8-4B（Q4_K_M）** 拉起来
-  （首次加载 5-15 秒），起不来才退回 **Mock**。
-- **真实模型模式**（本地 llama.cpp，OpenAI 兼容接口，无任何云端密钥）：
+启动器会按顺序探测三件事，**缺任何一件都还能跑**：
 
-```powershell
-# 也可以手动控制（例如另开一个窗口看模型日志）：
-powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1
-$env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
-```
+| 依赖 | 有 | 没有 |
+| --- | --- | --- |
+| LLM（`LLM_MODE=auto`） | 先找 `:1234`（Strata 25B）→ 再找/拉起 `:8080`（llama.cpp + Qwen3-4B） | 退回 **Mock**：剧本按你的话推进，仍是同一条代码路径 |
+| TTS | 卡里 `character.voice.engine: edge`，走 edge-tts（免费、无 Key） | 无网时降级为字幕 + 浏览器 `speechSynthesis` |
+| 神经音色侧车（可选） | 本机有 `mira-tts` conda 环境时可 `MIRA_TTS_ENGINE=neural` | 默认不启动，省 ~20s 启动与 ~2GB 显存 |
 
 - **Mock 模式**（`$env:LLM_MODE="mock"`）：不调用任何模型、不需要网络、不需要 Key，
-  剧本按你的话推进，四种状态、6 种表情、8 种动作、镜头/环境切换、3 类事件演出全部可复现。
-  它是**同一条代码路径**（同一个流、同一套指令、同一个前端状态机），只是把「文本生成」换成剧本，
-  用来保证在别人机器上也能零依赖看到完整流程。
+  四种状态、6 种表情、6 种动作、镜头/环境切换、剧情节点与三个结局全部可复现。
+  它是**同一条代码路径**（同一个 NDJSON 流、同一套指令、同一个前端状态机），
+  只把「文本生成」换成剧本——这是保证「别人机器上也能看到完整流程」的兜底。
+- **真实模型模式**（本地 llama.cpp，OpenAI 兼容接口，无云端密钥）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1   # 单独起 4B
+$env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
 
 页面右上角「观测」可以在运行时切换 provider、注入故障、查看状态事件与耗时。
 
@@ -43,7 +51,9 @@ $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 | --- | --- |
 | `/` | 互动场景 |
 | `/debug` | 观测页：一次互动的状态事件、耗时、错误 |
-| `/api/health` | 健康检查 |
+| `/api/health` | 健康检查（含实际 provider 与 voice 引擎） |
+| `/api/card` | 卡包快照：指令枚举 + 素材绝对 URL + 表演通道表 |
+| `/api/history/{sid}` · `/api/trace` | 会话回放 · 每轮决策轨迹 |
 
 > 麦克风需要 `localhost` 或 https 环境（浏览器安全上下文），本机 127.0.0.1 满足。
 
@@ -53,76 +63,87 @@ $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 | 题目要求 | 实现 | 位置 |
 | --- | --- | --- |
-| 场景为视觉主体、非聊天列表 | 全屏场景 + 角色 + 字幕 + 输入坞，无消息气泡 | `app/static/index.html` |
-| 移动端优先、桌面正常 | 560px 竖屏居中卡片，`dvh` + 安全区适配 | `style.css` |
-| 待机/倾听/思考/说话 四状态 | `data-state` 驱动角色微动、指示灯、文案 | `app.js:setState` |
+| 场景为视觉主体、非聊天列表 | 全屏舞台（背景板 + 角色贴片）+ 字幕 + 输入坞，无消息气泡 | `app/static/index.html` |
+| 移动端优先、桌面正常 | 移动端整屏竖屏（`max-width: 560px`）+ `100dvh` + 安全区适配；桌面端居中成 600px 取景框、垫模糊余光底图 | `style.css` |
+| 待机/倾听/思考/说话 四状态 | `data-state` 驱动角色微动、指示灯、字幕区形态 | `app.js:setState` |
 | 文字 + 麦克风输入 | 输入框 / 按住说话或轻点录音（`MediaRecorder` → `/api/stt`），带录音计时、电平、取消 | `app.js:startMic` |
-| 语音回复 + 同步字幕 | 逐句 TTS，音频播放时才把该句推到字幕；句间按标点插 80–420ms 气口 | `main.py:tts_worker` / `app.js:gapAfter` |
-| 多轮连续互动 | 会话保持 history + 观众事实记忆 + 反重复台账，剧情节拍随对话推进 | `main.py:Session` |
-| 语音打断 | 按下麦克风 = 本地停播 + 清空队列 + 服务端 epoch+1 | `app.js:interrupt` / `main.py` |
-| 被打断的回复立即失效 | 每个事件带 `seq`，客户端丢弃旧 seq；服务端 epoch 失效后停止下发 | 见 §4 |
-| 结构化角色/场景指令 | **首行 JSON 指令 + 换行 + 台词**，5 个维度、白名单收敛 | `cards/*/card.yaml` / `app/main.py:header_probe` |
+| 语音回复 + 同步字幕 | 逐句 TTS，音频播放时才把该句推到字幕；停顿由服务端后处理重插 | `main.py:tts_worker` / `app.js` |
+| 多轮连续互动 | 服务端 `Session` 持 history、观众事实、反重复台账；剧情由节点图推进 | `main.py:Session` / `app/story.py` |
+| 语音打断 | 按下麦克风 = 本地停播 + 清空队列 + 服务端 `epoch+1` 取消协程 | `app.js:interrupt` / `main.py` |
+| 被打断的回复立即失效 | 每个事件带 `seq`，客户端丢弃旧 seq；服务端 epoch 失效后不再下发 | 见 §4 |
+| 结构化角色/场景指令 | **首行 JSON 指令 + 换行 + 台词**，5 个维度、白名单收敛 | `card.yaml` / `main.py:header_probe` |
 | 一份数据三处用（卡包） | 卡包同时驱动提示词、指令枚举、客户端素材清单 `/api/card` | `cards/mira_cafe/card.yaml` / `app/cards.py` |
-| ≥3 种情绪 | neutral / smile / worried / surprised / thinking / listen，6 张独立表情贴片 | `app/static/assets/char/` |
-| ≥2 种非说话动作 | look_window / sip_coffee / check_phone / lean_in / phone_call / stand，7 张独立动作贴片 | `app.js:applyAction` |
-| ≥1 次背景/镜头/环境变化 | 镜头推近（整舞台 transform，不重绘素材）、灯光转暗（环境叠加，收尾拍固定触发） | `app.js:applyScene` |
-| ≥1 个由对话触发的视觉事件 | **接电话演出**（剧情节点 `phone_call` 触发：换贴片 + 屏幕冷光 + 环境音压低 2.6s）/ 雷闪（台词含「雷」触发） | `card.yaml:event_keywords` / `app.js:triggerEvent` |
-| 一种多模态表现能力 | **序列帧角色动画 + 程序合成演出层**：11 张同机位表情/动作贴片按音频时钟切换；闪电补光、滚雷、屏幕冷光、结局静帧全部程序合成 | `app.js:showSprite` `triggerEvent` |
-| 素材加载/结束/打断处理 | 静帧「加载中」徽标、`onload` 收层、打断即清 `src`（原来的 MP4 路径已删除） | `app.js:showStill` / `hideCinema` |
-| 生成中状态与失败处理 | 「静帧加载中…」徽标、失败降级为暗角+徽标、闪电/车灯天然不需要素材 | `app.js:degradeEvent` |
-| 模型超时/断线/失败反馈 | LLM 首 token 14s/整体 35s 超时、TTS 失败降级、注入故障可复现 | `main.py` / 观测面板 |
-| 快速连续输入不播失效回复 | `seq`/epoch 双保险（见 §4） | `app.js:sendTurn` |
-| 无密钥可体验 | Mock 模式（无模型权重时自动退回） | `app/providers.py:MockLLM` |
-| 一条命令启动 | `start.ps1` / `start.bat`（自动拉起本地模型，失败退回 Mock） | 仓库根目录 |
+| ≥3 种情绪 | neutral / smile / worried / surprised / thinking / listen，**6 张独立表情贴片** | `cards/mira_cafe/assets/char/` |
+| ≥2 种非说话动作 | look_window / sip_coffee / check_phone / lean_in / phone_call / stand，**6 张独立动作贴片** | 同上（`idle` 复用表情贴片） |
+| ≥1 次背景/镜头/环境变化 | `lights_dim` 吊灯熄灭（环境层叠加，收尾拍固定触发）。**镜头推拉刻意取消了**：整台舞台逐帧重采样会让「说话时画面闪」，收益只有 2% 的观感；`window_close` 的属性保留，留给将来整数像素平移的运镜 | `app.js:applyScene` |
+| ≥1 个由对话触发的视觉事件 | **接电话演出**（剧情节点 `phone_call`）/ 雷闪（台词含「雷」触发）/ 结局静帧 | `card.yaml:fx` / `app.js:triggerEvent` |
+| 一种多模态表现能力 | **分层舞台 + 卡驱动的程序合成演出**：贴片叠化换脸、呼吸微动、按音频时钟排的动作 beat；闪电补光、滚雷、屏幕冷光、结局静帧全部程序合成 | `app.js:showSprite` / `app/perf.py` |
+| 素材加载/结束/打断处理 | 「静帧加载中」徽标、`onload` 收层、打断即清 `src` | `app.js:showStill` / `hideCinema` |
+| 生成中状态与失败处理 | 加载徽标、失败降级为暗角 + 徽标、闪电/车灯天然不需要素材 | `app.js:degradeEvent` |
+| 模型超时/断线/失败反馈 | LLM 首 token 9s 预算换下一档、TTS 失败降级、故障可注入可复现 | `main.py` / 观测面板 |
+| 快速连续输入不播失效回复 | `seq` + `epoch` 双保险（见 §4） | `app.js:sendTurn` |
+| 无密钥可体验 | Mock 模式（没有模型权重时自动退回） | `app/providers.py:MockLLM` |
+| 一条命令启动 | `start.ps1` / `start.bat`（探测 → 按需拉起 → 起服务 → 开浏览器） | 仓库根目录 |
 
 ---
 
 ## 3. 系统结构
 
-> 进程级拓扑图（可交互，含边界与能力/边界清单）：[docs/topology.html](docs/topology.html) ·
-> 结构审查与待补能力：[docs/ARCHITECTURE_TOPOLOGY.md](docs/ARCHITECTURE_TOPOLOGY.md)
-
 ```
-① 内容层：卡包（数据驱动，一份数据三处用）
-  cards/<card_id>/card.yaml
-    ├─ character：人设 / 外形 / 事实清单 / 边界 / 声音参数
-    ├─ scene    ：时间、天气、机位 POV、打烊细节、环境音
-    ├─ beats[]  ：导演动机（goal / allow / forbid / 话题推进阈值 / 兜底台词）
-    ├─ directives：emotion / action / scene / effect / event 五个枚举 + default
-    ├─ tts      ：情绪语气 + 句级韵律规则 + 句间停顿
-    └─ assets   ：贴片 / 场景板 / 插入图 / 静帧演出的资源清单
-  app/cards.py：加载 + 校验（枚举、引用、资源路径、版本号）+ 生成客户端快照
-        │  三处消费：① 提示词渲染  ② 服务端指令白名单  ③ GET /api/card → 前端素材路径
+① 内容层：卡包（数据驱动，一份数据四处用）
+  cards/<card_id>/
+    card.yaml
+      ├─ character：人设 / 外形 / 事实清单 / 边界 / 声音参数
+      ├─ scene    ：时间、天气、机位 POV、打烊细节、环境音
+      ├─ story    ：20 个节点的故事图（ask 语义锚点 / goto 条件 / 三结局 / leave_triggers）
+      ├─ clock    ：场景时钟 20:30→21:00，1.5 分钟/轮；三个强制节点
+      ├─ understanding：理解层的场景门（阈值、跑题时用旁白接住）
+      ├─ directives：emotion / action / scene / effect / event 五个枚举 + default
+      ├─ channels ：5 个表演通道（speech/face/body/hand/gaze）+ 谁能抢谁
+      ├─ actions  ：7 个动作占哪些通道 / 能不能在说话时播 / 降级目标
+      ├─ corrections：台词 → 表现的第二段校正规则（只准降级）
+      ├─ fx       ：8 个特效实例 + 5 条 cue（程序只提供六个原语）
+      ├─ tts      ：情绪语气 + 句级韵律 + 句间停顿
+      └─ assets   ：贴片 / 场景板 / 结局静帧 / 音频，**相对卡根**
+    presets.yaml ：14 条预设台词（barks），带 act / rel / beat / 优先级 / 冷却 / 多变体
+  app/cards.py：加载 + 校验（枚举、引用、资源路径、节点引用、fx 实例）+ 生成客户端快照
+        │  三处消费：① 提示词渲染  ② 服务端指令白名单  ③ GET /api/card → 前端素材绝对 URL
         ▼
-② 服务端：FastAPI（单进程，一键启动）
-  app/main.py
-    ├─ Session：seq（轮次）、epoch（打断代）、history、beat（节拍）、user_facts、recent
-    ├─ 编排：run_turn = ASR 文本 → ContextComposer → LLM 流 → Parse → Guard →
-    │        BeatDirector → TTS 并发合成 → NDJSON 下发
-    ├─ 闸门：sanitize（白名单）/ pin（本拍固定表现）/ guard（节拍）/ dedupe（不重播事件）/
-    │        keyword_event（内容触发兜底）
-    ├─ providers：MockLLM / LlamaLLM（llama.cpp）/ edge-tts / faster-whisper
-    └─ /api/card /api/session /api/turn /api/interrupt /api/stt /api/events
+② 服务端：FastAPI 单进程（app/main.py 约 2.9k 行）
+    ├─ Session：seq（轮次）、epoch（打断代）、history、节点状态、user_facts、trace
+    ├─ 一轮 = run_turn：
+    │    记忆抽取 → 场景门（decision/selector）→ 言语行为 act（acts）
+    │    → 预设命中？→ 命中直接出字（presets）/ 未命中 → 导演层给内容骨架（director）
+    │    → 4B 流式生成 → 首行指令解析（header_probe）→ 白名单收敛（sanitize）
+    │    → 首句闸门（topic/禁词/复读/时间）→ 表演排期（perf + channels）
+    │    → 逐句 TTS 合成 → NDJSON 下发
+    ├─ 剧情：story.py 节点图（纯函数，0 延迟）+ clock 硬闸门
+    ├─ providers：MockLLM / LlamaLLM / StrataLLM / DeepSeekLLM / edge-tts / faster-whisper
+    └─ 路由：/ /debug /api/health /api/card(s) /api/session /api/turn /api/interrupt /api/stt
+            /api/history/{sid} /api/events/{sid} /api/trace /api/tts_stream /api/tts_file
+            /api/cloud /api/warm /api/debug/inject /card-assets/{id}/…
         ▼
-③ 客户端：原生 HTML/CSS/JS（移动端优先，不持有剧情真相）
-  app/static/
+③ 客户端：原生 HTML/CSS/JS（无框架、无构建步骤，不持有剧情真相）
+  app/static/（index.html 202 行 / style.css 679 行 / app.js 约 3.6k 行）
     ├─ 场景层：背景板（固定静帧）+ 角色贴片（alpha）+ 雨痕/闪电/暗场/颗粒
-    ├─ 演出层：静帧照片（推近）+ 闪电补光 + 车灯横扫 —— **没有 <video>**（2026-10-20 全删）
+    ├─ 演出层：静帧照片（推近）+ 闪电补光 + 屏幕冷光 —— **没有 <video>**
     ├─ 状态机：idle / listening / thinking / speaking
-    ├─ 音频：Web Audio 环境音（程序合成雨声底噪）+ 逐句 Audio 队列 + 句间气口
+    ├─ 音频：WebAudio 环境音（程序合成雨声底噪）+ 逐句 Audio 队列
+    ├─ 表演：通道仲裁（同一通道同时只有一个动作）+ 按音频时钟解析 beat
     └─ 输入：文本 + 按住说话 / 轻点录音（MediaRecorder + 自适应 VAD）
 ```
 
-一次 turn 的事件流（NDJSON，每行一个 JSON，均带 `seq`）：
+一次 turn 的事件流（NDJSON，每行一个 JSON，均带 `seq`；客户端处理 17 种事件）：
 
 ```
-state(thinking) → turn_start → directive → subtitle_partial… →
-state(speaking) → audio(第1句) → … → reply → done
+state(thinking) → turn_start → directive → perf → subtitle_partial…
+→ state(speaking) → audio(逐句) → directive_patch? → reply → done
 ```
 
 指令**先于**台词和音频发出：`emotion` 到得早，第一句 TTS 就能用对应语气合成，
 表情/镜头也和第一句语音同时发生，而不是等整段说完才知道她是什么情绪。
-`directive` 事件里带 `fixes`（白名单收敛、节拍闸门、关键词兜底各自的说明），观测面板可见。
+`directive` 事件里带 `fixes`（白名单收敛、节拍闸门、关键词兜底、台词校正各自的说明），
+观测面板可见。`done` 事件带 `provider`、`first_text_ms`、`gate`、`dialog_fix_n`、`tts_cache`。
 
 ---
 
@@ -152,7 +173,7 @@ state(speaking) → audio(第1句) → … → reply → done
   可选扩展里最难的部分，本机没有可靠的 AEC，容易让角色听到自己的声音）。
 - **轻点一下**也能录：说完停顿 1.15s 自动发送，再点一下立刻发送。很多人第一次用会"点一下然后
   说话"，如果只支持按住，他们会以为话筒坏了。
-- 录音时界面上有**计时、电平条、取消**（`#recBar`）。这三种东西比任何提示文案都管用：
+- 录音时界面上有**计时、电平条、取消**。这三种东西比任何提示文案都管用：
   用户能自己判断"我有没有被听见"。
 
 这一版改之前，实测踩过三个会让用户认为「话筒无法说话」的坑（都修了，注释写在
@@ -166,7 +187,6 @@ state(speaking) → audio(第1句) → … → reply → done
    阈值取 `max(0.006, floor×2.4)`，并且要求检到足够多语音帧才允许自动发送。
 3. 她说完最后一句时字幕被清空、这一轮又没有任何可见反馈 → 用户以为「刚才什么都没发生」。
    现在字幕保留到最后一句，未识别/太短/被拒/被占用都有具体提示。
-
 ---
 
 ## 5. 角色 / 场景指令协议
@@ -191,58 +211,56 @@ state(speaking) → audio(第1句) → … → reply → done
 2. **本拍固定表现 `pin`**：收尾拍必须出现「灯光转暗」的环境变化，不交给 4B 随机决定；
 3. `guard_story()` **节拍闸门** + **事件去重**：还没到的事件拦下，已经演过的事件不再重播；
 4. `keyword_event()` **内容触发兜底**：4B 小模型经常只给 `event:"none"`，若用户这句话里
-   确实出现了「雷 / 照片 / 末班车」触发词、节拍允许、且这个事件还没放过，就补一个
-   —— 事件权限仍然绑在台词内容上，不是计时器。
+   确实出现了触发词（「雷 / 闪电 / 打给 / 拨 / 打通 / 铃声」）、节点允许、且这个事件还没放过，
+   就补一个——事件权限仍然绑在台词内容上，不是计时器。
 
-### 5.1 让 4B 模型「像在对话」而不是「在背台词」
+复现这套协议的最小方法：`tools/qa/turn_api.py` 把每一轮的 NDJSON 原样打印，
+`tools/qa/probe_json_shell.py` 用真模型反复采样（专门测「协议 JSON 漏进字幕/语音」这一类）。
 
-第一版提示词把「1–2 句、不超过 45 字、情绪藏在动作里」写死，4B 模型于是把每一轮都做成
-一句写景短诗：用户问「你是在等谁」，它答「这雨，好像下得挺久的」——技术上合规，体验上是
-**答非所问**，整段互动像在念固定台词。这一版改了五件事：
+### 5.1 一轮对话是怎么被决定出来的（这一版最大的结构变化）
 
-1. **回答纪律**：「先回答，再延伸。对方问什么，第一句必须针对那个问题做出反应；
-   不想说就否认、反问、或一句话挡回去，**不允许**用天气/景物/比喻代替回答」。
-2. **具体化**：要求给物件、给时间、给数字（「十点半」「过期的 Portra 400」「第四十七个晚上」），
-   一轮最多一个比喻。
-3. **反重复台账**：把最近 5 句角色台词贴回提示词，明确要求「换一种说法」；
-   llama.cpp 侧再开 `repeat_penalty`（回看上下文，压跨轮逐字复读）。
-4. **观众记忆**：从用户这句话里抽「他叫什么 / 为什么这么晚 / 被雨淋了」这类事实，
-   下一轮写进提示词里——被记住一次比多一句华丽台词更能让人觉得「这是活的」。
-5. **空台词兜底**：4B 偶尔只吐首行 JSON 就停（本轮实测真的会发生），此时用本拍兜底台词，
-   并在观测面板记一条 fix，不假装是模型说的。
+第一版把「读懂你说什么、决定她演什么、把话说自然」三件事全塞给 4B，结果是
+「技术上合规、体验上答非所问」。现在拆成**三层，各管一件事**：
 
-**后来补的一条（同日下午）：真正的问题不是模型太小，是我让它同时干了四份工。**
-上面五条都还在，但转折点是新增 `app/director.py` **导演层**：意图判定、这一轮要传达的
-事实骨架、机检标准（必须出现的名字 / 本轮禁用词 / 字数 / 跨轮复读）全部放进确定性代码，
-模型只负责把已定的内容说成她的口吻。于是默认档从 25B 换回 **4B**：单轮生成 0.4–0.6s，
-关键轮（「你还记得我叫什么吗」）走「生成 → 机检 → 重写一次 → 确定性兜底」，
-固定六轮脚本 **0 违规**，而 25B 在同一脚本上是 4–7s 一轮。
-详见 [`docs/SMALL_MODEL_PLAN.md`](docs/SMALL_MODEL_PLAN.md)。
+```
+用户这句话（打字 / STT）
+  │
+  ├─① 记忆抽取        extract_facts()                              main.py
+  │     「他叫什么 / 为什么这么晚 / 被雨淋了」→ Session.user_facts
+  ├─② 场景门          selector.py（cross-encoder 选择题）/decision.py（三级链）
+  │     先问「这句话还在这个场景里吗」，门外的话走陌生人状态，不硬答
+  ├─③ 言语行为        acts.py 正则分类：招呼/应答/道谢/告别/沉默/闲聊/越界/出戏/提问
+  ├─④ 预设优先        presets.py：命中 act 直接出预置台词（0 生成 + 预合成音频）
+  │     14 条 bark，每条 3 变体轮换、同拍连续命中 2 次后强制走生成
+  ├─⑤ 生成兜底        director.py：给这一轮**该传达的事实骨架**（content / anchors / 禁词）
+  │     4B 只负责把已定的意思说成她的口吻，不参与「说什么」
+  ├─⑥ 首句闸门        句子完整时先校验再送 TTS：话题锚点 / 硬禁词 / 英文词 / 复读 / 旁白腔 / 时间白名单
+  │     不过则等第二句，两句都不过才丢弃重写一次，再不过用对题兜底
+  └─⑦ 表演排期        perf.py 出带时间锚的 beat 列表 → channels.py 仲裁冲突 → 客户端按音频时钟演
+```
 
-**再补一条（2026-10-20 晚）：光有提示词纪律还不够，必须有机检。**
-用户反馈「答非所问，撑不起一段对话」，查下来是结构问题：旧意图规则是「一个意图一份
-固定台词」，没表示**问的是哪件事**（「为什么这么晚还在」和「你为什么不去找他」落到同一句）；
-default 轮根本没有 content；而机检只覆盖 2 个关键轮，其余轮次错了也拦不住。
-现在的结构是：
+三条设计依据（也都写了失败案例）：
 
-1. **问句槽位**取代意图类别：先抽「这句话问的是哪件事」（号码 / 回去方式 / 照片 / 咖啡 /
-   怕不怕 / 为什么不去找 / 是不是骗 / 后来呢 / 打算怎么办…），每个槽位自带
-   `content`（该说的事实）+ `anchors`（回答必须点到的话题词）+ `fallback`（对题兜底）。
-2. **首句闸门**：利用「TTS 本来就要等到句号才切句」这一点，**第一句完整时先校验再送 TTS**，
-   成功路径 0–1ms 额外延迟；答不在题上就先等第二句，两句都不过才丢弃整段重写一次，
-   再不过用对题兜底。闸门判据是可机检的：话题锚点 / 硬禁词（「阿岸」）/ 英文词 /
-   与最近 3 句的整句与开头半句复读 / 旁白客服腔。
-3. 每次 turn 的 `done` 事件里带 `gate.{checks,rewrites,ms,wait_ms}` 与 `first_text_ms`，
-   谁都能复核「这轮到底答没答对、闸门有没有动作」。
+- **约束写得太硬，模型就会用答非所问来满足约束**。第一版提示词要求「1–2 句、不超过 45 字、
+  情绪藏在动作里」还要求「被问到在等谁时回避」，4B 选了最省事的路：转移话题。现在第 1 条
+  铁律是「先回答，再延伸；不想说就否认/反问/挡回去，不允许用天气代替回答」。
+- **小模型不适合既当考生又当阅卷人**。判「问的是哪件事」交给一个只能从固定候选集里选一个的
+  cross-encoder（`selector.py`，一次前向 26 个候选，CPU 实测约 100ms/轮），4B 被告知答案。
+  没装 torch 时这一层降级成关键词门，返回里标 `backend=keyword`，质量差一档但演示不依赖它。
+- **状态更新绝不能放在 emit 之后**。曾有一个 `beat_advance(text=...)` 参数名写错（签名是
+  `user_text`）的 bug：异常发生在 `emit("reply")` 之后、`history.append` 之前，又被兜底
+  `except` 吃掉，于是**每一轮的历史都没写进去**，模型永远在「第一次见你」的上下文里说话。
+  现在历史在 `emit(reply)` 之前落库，异常栈写进会话事件日志。
 
-> 结构、数据流、判据、before/after 真实台词与数字，全部写在
-> **[`docs/DIALOGUE_LOGIC.md`](docs/DIALOGUE_LOGIC.md)**；取证数据在
-> `docs/review/dialogue/`（12 句固定剧本 × before/after，含逐轮原始记录与报告）。
+结构、数据流、判据与 before/after 真实台词见
+[`docs/DIALOGUE_LOGIC.md`](docs/DIALOGUE_LOGIC.md)（写于 2026-10-20，覆盖到导演层与首句闸门；
+之后新增的预设库 / 决策层 / 表演排期见 §5.1 与 §5.3，以及
+[`docs/DIALOGUE_WORKFLOW_V2.md`](docs/DIALOGUE_WORKFLOW_V2.md)）。
 
 ### 5.2 剧情推进：故事节点图（`app/story.py`）
 
 v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点图**，写在
-`cards/mira_cafe/card.yaml` 的 `story.nodes` 里：20 个节点、三个结局、一条借电话分支。
+`cards/mira_cafe/card.yaml` 的 `story.nodes` 里：**20 个节点、三个结局、一条借电话分支**。
 判定全部是**纯函数**（不调模型、不看台词生成结果），所以 0 延迟、可单测。
 
 推进有三条路，优先级从高到低：
@@ -259,6 +277,9 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 21:00 无条件进结局。场景时钟按**对话轮数**走（`minutes_per_turn: 1.5`，20:30 → 21:00 约
 20 轮），不随真实时间走 —— 否则用户发呆也算剧情在流逝。
 
+三个结局由 `story.rules` 求值：`offered_phone == true` → 朋友结局；`== false` → 陌生人结局；
+中途说「我要走了 / 该走了 / 再见」等（`leave_triggers` 15 条）→ 提前道别的第三结局。
+
 > **2026-10-22 修过的三个真 bug（都在 `app/story.py` 里留了注释）**
 > ① `tick()` 曾经在 `resolve()` 之前就把 `turns_in_node +1`，而每个节点的兜底 goto 都是
 > `turn_gte: 1` —— 条件当场成立，**每轮必跳**，节点图退化成计时器，用户说的每句话都没
@@ -274,38 +295,38 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 | 字段 | 取值 | 前端表现 |
 | --- | --- | --- |
 | emotion | neutral / smile / worried / surprised / thinking / listen | 换角色贴片（叠加在固定背景板上，背景不动） |
-| action | idle / look_window / sip_coffee / check_phone / lean_in / phone_call / stand | 动作贴片 + 镜头微推；几秒后回到当前情绪贴片 |
-| scene | cafe_night / window_close / lights_dim | 整舞台镜头变换（不重绘素材）或暗场叠加 |
+| action | idle / look_window / sip_coffee / check_phone / lean_in / phone_call / stand | 动作贴片 + 镜头微推；按通道仲裁决定能不能插话 |
+| scene | cafe_night / window_close / lights_dim | `lights_dim` 切暗场（环境层叠加）；`window_close` 目前只有属性、无视觉变化（推拉已取消，见 §8） |
 | effect | rain / thunder / none | 雨后的屋檐滴水环境音、闪电补光 |
-| event | none / thunder / phone_call / ending | 程序合成演出（闪电补光 + 滚雷 / 屏幕冷光 + 环境音压低 / 结局静帧），失败降级为最简演出 |
+| event | none / thunder / phone_call / ending | 程序合成演出（见 §6），失败降级为最简演出 |
 
-`fixes` 让「模型不听话」可观测：白名单收敛、节拍拦截、事件去重、关键词兜底、空台词兜底
-各有说明，观测面板能看到。
-
-### 5.3 表现指令：框架决定 + 用台词做二次校正（2026-10-21）
+### 5.3 表演层：通道仲裁 + 台词二次校正（2026-10-21 起）
 
 情绪/动作**不再让 4B 在首行 JSON 里自己选**，也不只是「意图查表」——查表看不见这一轮
 到底说了什么，于是会出现「表里要掏照片、台词里根本没提照片」这种动作和台词互不相干的情况。
-现在的链路是两段：
+现在的链路是四段：
 
-1. **L0（0ms，拿到判题就发）**：`app/director.py` 的 `_EMOTION_BY_INTENT` /
-   `_ACTION_BY_INTENT` 按意图给出表情与动作，客户端不必等模型首字就能换脸/演动作；
-2. **第一句台词落地后（~0.7–1.2s）**：`director.dialog_fix()` 用**真实台词**再校正一次，
-   规则写在卡包 `cards/mira_cafe/card.yaml` 的 `corrections:` 段（数据，不是硬编码），
-   每个字段（emotion / action）取第一条命中的规则，**双向生效**：
+1. **通道规则进卡包**（`channels` + `actions`）：5 个通道（speech / face / body / hand / gaze），
+   **同一通道同一时间只能有一个动作，不同通道可以叠加；说话通道优先** —— 任何要用到嘴的
+   动作（喝水/吞咽/叹气/咳嗽）在她说话时一律不能播，按 `degrade_to` 降级（`sip_coffee`
+   降级成 `look_window`）。`app/channels.py` 只做冲突判定与降级，服务端与客户端读**同一张表**
+   （`/api/card` 的 `stage` 字段）。
+2. **L0 即时表现**（0ms）：`director.py` 按意图先给一版表情与动作，客户端不必等模型首字就能换脸。
+3. **台词落地后二次校正**（~0.7–1.2s）：`director.dialog_fix()` 用**真实台词**再校正一次，
+   规则写在卡包 `corrections:` 段（8 条，数据不是硬编码），每个字段取第一条命中的规则，
+   **只准降级、不许升级**：
    - 台词提到雨/窗外 → `look_window`；手机/电话/没电 → `check_phone`；咖啡/杯子 → `sip_coffee`；
-   - **反向约束**（这条最有价值）：表里要演 `phone_call` 但台词里一个「打/拨/喂/电话」都没有
-     → **降级**成 `check_phone`（不许没头没尾地开始打电话）；
+   - **反向约束**（最有价值）：表里要演 `phone_call` 但台词里一个「打/拨/喂/电话」都没有
+     → 降级成 `check_phone`（不许没头没尾地开始打电话）；
      `stand` 只允许在 `lights_dim` / 三个结局节点出现，早于此一律降级回 `idle`；
-   - 她自己**说话时**一律不允许 `listen` 表情（这是上一轮反馈里「她说着话却在倾听」的兜底漏点）。
-3. 校正是**增量事件** `directive_patch`（只带 emotion/action），客户端立即应用；
-   `done.dialog_fix = {n, fixes, emotion, action}` 与 `logs/turns.jsonl` 的 `dialog_fix_n` 留痕，
-   观测面板的「台词校正」列显示每轮改了几次。
+   - 她自己**说话时**一律不允许 `listen` 表情。
+4. **表演排期**（`app/perf.py`，纯函数）：把「这一轮该演什么」变成带时间锚的 beat 列表 ——
+   听到问题先顿一下再开口、顿的这段时间视线移开、手势落在句间停顿而不是开场一次做完、
+   说完回到「听」的脸。客户端拿真实音频时长解析锚点后执行，不是按墙上时钟。
 
-实测（10 轮固定台词，`tools/qa/dialog_fix_probe.py`）：**4/10 轮触发校正**，
-其中一次是「表里 show_photo → 台词里没提照片 → 降级 look_window」，
-一次是「表里 lean_in → 台词提到电话 → check_phone」。逐轮记录见
-`docs/review/dialogue/dialog_fix_after.json`。
+校正是**增量事件** `directive_patch`（只带 emotion/action），客户端立即应用；
+`done.dialog_fix = {n, fixes, emotion, action}` 与 `logs/turns.jsonl` 的 `dialog_fix_n` 留痕，
+观测面板的「台词校正」列显示每轮改了几次。
 
 ---
 
@@ -318,11 +339,21 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 
 | 事件 | 触发 | 表现 | 实现 |
 | --- | --- | --- | --- |
-| `phone_call` | **剧情节点** `phone_call`（借了手机 → 她按号码） | 角色换「手机贴耳」贴片 + 屏幕冷光闪一下 + **环境音压低 2.6s**（世界安静了一瞬）+ 顶部徽标 | `applyAction` + `triggerEvent("phone_call")` |
-| `thunder` | 台词里出现「雷 / 闪电 / 打雷」 | 三段冷蓝补光（`@keyframes lightning`）+ 低频滚雷（WebAudio 合成，无素材） | `doFlash()` + `rumble(1.0, 1.6)` |
+| `phone_call` | **剧情节点** `phone_call`（借了手机 → 她按号码） | 角色换「手机贴耳」贴片 + 屏幕冷光闪一下 + 环境音压低 2.6s + 顶部徽标 | `applyAction` + `fx` 的 `phone_glow` |
+
+![接电话演出](docs/shot_event_phone.png)
+
+> 上面这张是真实页面截图：贴片换成「手机贴耳」（这张贴片重出了 5 版才过验收），
+> 顶部徽标说明这一拍是由剧情节点触发的。
+| `thunder` | 台词里出现「雷 / 闪电 / 打雷」 | 三段冷蓝补光（`@keyframes lightning`）+ 低频滚雷（WebAudio 合成，无素材） | `doFlash()` + `rumble()` |
 | `ending` | 进结局节点 | 整屏静帧（`ending/friend.webp` / `stranger.webp`）+ 徽标「21:00 · …」 | `handleEnding` → `showStill` |
 
-> 演出仍然是「插入镜头」：`photo_reveal` 会整屏进 cinema 层，结束后回到常驻舞台；
+卡包里 `fx` 段声明 **8 个特效实例 + 5 条 cue**（蒸汽、灯光呼吸、玻璃起雾、反光、冷光、
+滚雷、两张结局静帧），程序只提供六个原语（glow / flash / particle / still / shade / audio），
+「窗户在哪」「杯子在哪」由卡包的 `geometry.zone` 决定——所以特效是**数据驱动**的，
+换卡不用改前端。
+
+> 演出仍然是「插入镜头」：`photo_reveal` 这类整屏事件会进 cinema 层，结束后回到常驻舞台；
 > 常驻舞台本身永远是「背景板 + 角色贴片」两层，**不依赖任何视频**，删视频不影响待机画面。
 
 播放细节（题目要求的三件事，在无视频之后仍然成立）：
@@ -335,77 +366,46 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 
 > 为什么不再去生成替代视频：这类片段必须和底板同机位、同光线、同景深才不"跳台"，
 > 而程序合成已经能把"画面变了、而且是因为你这句话变的"说清楚，成本是 0 素材、0 授权、0 加载。
-
 ---
 
 ## 7. 模型与素材
 
-> 素材审核入口：**[docs/ASSETS_REVIEW.md](docs/ASSETS_REVIEW.md)**（哪张图在哪、哪些在用、哪些是废弃残留、已知问题）。
-> 第五轮重画（Krea-2 Turbo / char_v8 + plate_v8 + 动作中间帧序列）的验收记录与切换方式：
-> **[docs/ASSETS_V8.md](docs/ASSETS_V8.md)** —— 默认仍走 v7，`?assets=v8` 试看。
+> 素材审核与历史见 [`docs/ASSETS_REVIEW.md`](docs/ASSETS_REVIEW.md)。
+> **注意**：那份文档记录的是前三轮（Qwen-Image → animagine SDXL）的审核过程；
+> 当前线上素材是第五轮之后的产物，规格见本节。
 
 | 用途 | 方案 | 说明 |
 | --- | --- | --- |
-| 场景背景板 | **Qwen-Image 2.1**（t2i 工作流，本地 ComfyUI 0.37） | 864×1536 竖屏、25 步、`euler+simple`、CFG 1.0（蒸馏模型，CFG 必须 1.0） |
-| 角色 / 表情 / 动作 | **Qwen-Image 2.1 参考图编辑工作流** | 场景图 + 角色参考图两张输入把人物放进场景，再逐条指令派生 11 个表情/动作 |
-| 角色抠像 | rembg `isnet-anime` + 连通域清理 | 得到带 alpha、与背景板同机位的角色贴片 |
-| 演出（已删视频） | ~~AniSora V3.1（Wan2.1-I2V-14B fp8）~~ → 程序合成 + 一张静帧 | 原来生成 4 段 MP4，但机位/光线和底板不是同一场戏，2026-10-20 全部删除；现在闪电/车灯用 CSS + WebAudio 合成，照片用 `insert/polaroid.jpg` 推近 |
-| 对话 | Mock 剧本 / Qwen3.8-4B（llama.cpp，OpenAI 兼容） | 真实模式完全本地，无云端密钥 |
-| TTS | edge-tts `zh-CN-XiaoyiNeural`（rate -6%，pitch -8Hz，音量 0） | 无 Key；按句流式合成（长连保活）、PCM 边收边播；同文本缓存命中 0 开销 |
+| 场景背景板 | **Qwen-Image 2.1 出构图 → animagine-xl-4.0 重画** | 先要「结构正确」的实拍感场景，再用动漫底模高 denoise 重绘成 2D 赛璐璐，最后对齐 864×1536 并统一调色 |
+| 角色 / 表情 / 动作 | **Krea-2 Turbo v10**（`JANK2AnimeKrea2Turbo_v10`, int8） | UNET + `CLIPLoader(type=krea2)` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`；10 steps、CFG 1.0、euler/simple，1728×3072 直出后 premultiplied 降采样到 864×1536 |
+| 电话贴片（1 张） | **Qwen-Image-Edit** 参考图精修 | 姿态对、但 edit 的 reference latent 会留半透明重影；v18→v19→v19_clean 三轮只做清理，不改姿势/身份 |
+| 角色抠像 | rembg `isnet-anime` + 连通域清理 | 得到带 alpha、与背景板同机位同尺寸的贴片 |
+| 配准 | `register_poses.py`：头顶点 / 头宽 / 头中心 x | 12 张是分别重画的，lean_in 镜头更近、头还偏过 20–60px；只求整体缩放 + 平移，**头对头** |
+| 演出（已删视频） | ~~AniSora V3.1（Wan2.1-I2V-14B fp8）~~ → 程序合成 + 一张静帧 | 原来生成 4 段 MP4，机位/光线和底板不是同一场戏，2026-10-20 全部删除；现在闪电/车灯用 CSS + WebAudio 合成 |
+| 对话 | Mock 剧本 / Qwen3-4B（llama.cpp，OpenAI 兼容） | 真实模式完全本地，无云端密钥；可选 Strata 25B 对照档 |
+| TTS | edge-tts `zh-CN-XiaoyiNeural`（rate -6%，pitch -8Hz） | 免费无 Key；按句流式合成、同文本缓存命中 0 开销 |
 | STT | faster-whisper `small`，CPU int8，VAD | 热身后 2.2s 语音约 2.2s 转写；`WHISPER_SIZE=base` 可降到 0.8s |
 
-### 7.1 两个专门工作流，配合使用
-
-关键原则：**场景是固定一层，角色是另一层**。先分别生成，再合成；不再「一张图里同时有场景和人物」。
-第一版用 SDXL + img2img 做「同构图表情差分」，问题是 img2img 会把背景一起重绘（人物一换，灯和窗也跟着变），
-所以改成了下面这条链路：
-
-**① 场景工作流（Qwen-Image 2.1 文生图）**
-
-空咖啡馆背景板，9:16（864×1536，与手机竖屏一致），提示词里明确 `empty, no people`。
-用的是 Qwen-Image 2.1 的原生节点图：
+### 7.1 当前素材：12 张贴片，一套布局
 
 ```
-UNETLoader(qwen_image_2.1_int8_convrot) + CLIPLoader(type=qwen_image) + VAELoader
-→ TextEncodeQwenImage21(prompt, negative, cfg 1.0) → EmptyLatentImage(864×1536)
-→ KSampler(steps 25, cfg 1.0, euler/simple) → VAEDecode → SaveImage
+cards/mira_cafe/assets/
+  char/   neutral smile worried surprised thinking listen      ← 6 张表情
+          look_window sip_coffee check_phone lean_in phone_call stand  ← 6 张动作
+          manifest.json（bbox / 配准参数 / 美术溯源字段）
+  plate/cafe_night.webp（864×1536，无人物的空场景）
+  ending/friend.webp · stranger.webp（两张结局静帧）
+  fx/softdot.webp（粒子贴图）
+  audio/sample_user.wav · sample_user_2.wav（「用户示例语音」）
 ```
 
-**② 角色工作流（Qwen-Image 2.1 参考图编辑）**
+**素材跟着卡走**（2026-10-22，v17）：一张卡 = 一个目录 + 一个 URL 前缀
+`/card-assets/<card_id>/`。加第二张卡不需要改代码，删卡 = 删目录，回滚 = 整棵搬回去。
+前端不拼任何素材目录名——`/api/card` 下发的是**绝对 URL**，客户端只负责用。
+（旧布局把所有卡的素材塞在 `app/static/assets/`，第二张卡必然撞名。）
 
-同一个模型的编辑路径（`TextEncodeQwenImage21` 接收参考图 → reference latents），按两步走：
-
-- **把角色放进场景**：参考图 1 = 背景板，参考图 2 = 角色立绘；指令是「把图 2 的女孩放进图 1 的吧台后面，
-  保持脸、雨衣、发夹，匹配灯光，不要改房间和镜头」。人物和场景由此在同一次生成里对齐机位。
-- **派生整套动作神态**：以上一步合成好的帧为参考图，逐条指令只改「表情 / 动作」：
-  `keep the same character, same outfit, same pose and same camera framing; <surprised expression>`
-  等 11 条（6 表情 + 5 动作）。因为每次都以同一张 hero 帧为参考，人物不会像 img2img 那样越改越飘。
-
-**③ 抠像与合成**
-
-每帧用 rembg `isnet-anime` 抠出角色，去掉悬空的小连通块（比如头顶的吊灯），得到与背景板
-**同一机位、同一尺寸**的 RGBA 贴片；合成验证的像素差在人物区域约 8/255（验证脚本会打印）。
-前端把背景板（`plate/cafe_night.webp`）和角色贴片（`char/*.webp`）分开加载，换表情/动作只换上层。
-
-```powershell
-# 素材生成（需要 D:\ai\qwen-image 的 ComfyUI 0.37 + 本地 Qwen-Image 2.1 int8）
-python tools\gen\qwen_workflow.py pipeline    # 旧链路：场景 → 合成 → 背景板 → 11 个表情/动作
-python tools\gen\gen_turn.py                  # 新链路：中近景底板 → 合成 Mira → 11 状态（见 §7.3）
-python tools\gen\cut_turn2.py                 # 用「合成帧 − 干净底板」求 alpha
-python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp + 备份旧素材
-```
-
-`integrate_turn.py` 会把 `assets/turn/` 验收通过的底板与 11 张 RGBA 贴片压成 webp 写进
-`app/static/assets/`，旧素材整体备份到 `assets/legacy/<时间戳>/`，一条命令可回滚；
-`--grade` 是**底板和贴片共用**的同一套调色，这是避免"人物和背景两张皮"的关键一步。
-
-相关参考（用来选型/对齐官方节点图，不依赖任何在线 API）：
-
-- Comfy Organ 官方工作流库：[Qwen-Image-Edit 工作流](https://comfy.org/workflows/model/qwen-image-edit/)、[全部工作流](https://comfy.org/zh/workflows/)
-- 社区 Qwen-Image 2.1 工作流（含节点版本要求与 CFG=1.0 的原因）：<https://github.com/foprc/qwen-image-2.1-comfyui-workflow>
-- Qwen-Image 2.1 ComfyUI 重打包权重：<https://huggingface.co/Comfy-Org/Qwen-Image-2.1>
-- 透明图层生成的另一条路线（对重训 SDXL 模型兼容性一般，故未采用）：[ComfyUI-layerdiffuse](https://github.com/huchenlei/ComfyUI-layerdiffuse)
-- 角色绑定/实时驱动的后续方向：[Inochi2D](https://github.com/Inochi2D/inochi2d)（开源 Live2D 替代）
+12 张的分工：`idle` 没有独立贴片，复用当前表情；`stand` 是站姿，只在关灯与结局出现。
+**没有中间过渡帧**——见 §10 第 4 条，那一批已整体下架。
 
 ### 7.2 为什么用「场景工作流 + 角色工作流」而不是一张图
 
@@ -414,6 +414,12 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 | 单张全帧图（第一版） | 背景一起重绘，灯/窗会抖 | 整张场景跟着变 | 靠 seed + img2img 近似，不稳定 |
 | **背景板 + 角色贴片（当前）** | **背景像素不动** | **只换贴片，场景不动** | 贴片与背景板同尺寸同机位，几何上对齐 |
 | Live2D / Inochi2D 绑定 | 不动 | 需重做绑定 | 最灵活，但 72h 内做不出可用绑定 |
+
+第一版的问题是**场景和人物被烘焙在同一张图里**：5 张表情是同一张全帧图的 img2img 差分，
+换脸时整间店都在轻微抖动。拆成两层之后，`tools/qa/layers_test.py` 在真实页面里冻结背景断言：
+换表情只改变角色 alpha 之外的 **0.08%** 画面（阈值 1.5%），镜头变换作用在同时包住两层的 `.stage` 上。
+只要「换 A 会导致 B 也变」，说明 A 和 B 还共用一个不可分割的产物——修法是在生成侧拆开，
+不是在前端用交叉淡化掩盖。
 
 ### 7.3 素材返工：为什么第一版「不像那家店」
 
@@ -436,25 +442,15 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 - **机位-道具分配表**：A 机位（客人视角越过桌面）只准写这个机位看得见的打烊细节，
   洗碗池留给反打机位；
 - **场景板先定稿、再合成角色**：先出「空的、雨后、打烊中」的 plate 并逐项过验收清单，
-  再把 Mira 合成进窗口那个座位；
-- **三视图当身份锚**：正/侧/背逐角度出图，只用来锁「脸/发型/发夹/雨衣/相机」，
-  不用一张 sheet 硬凑；
+  再把 Mira 放到窗口那个座位；
+- **三视图当身份锚**：正/侧/背逐角度出图，只用来锁「脸/发型/发夹/雨衣/相机」；
 - **表情只裁头肩单改**：每次回锚图派生，绝不链式往下改（否则越改越飘）；
-- **道具用位置绑定 + 局部重绘**：发夹、相机这种小物件靠局部 crop 重绘和贴片兜底，
-  不指望整图重生成时它自己长对。
+- **道具用位置绑定 + 局部重绘**：发夹、相机这种小物件靠局部 crop 重绘和贴片兜底。
 
-> 状态：**第一轮返工已完成并上线**（2026-10-19）。
-> 新素材在 `assets/turn/`，经 `tools/gen/integrate_turn.py` 统一调色后替换 `app/static/assets/`，
-> 旧素材备份在 `assets/legacy/<时间戳>/`。这一轮做完的：客人视角隔桌中近景、雨后（无雨幕）、
-> 打烊细节（未收餐具 / 待洗杯 / 翻起椅子 / 灭灯牌）、两盏吊灯、琥珀雨衣 + 星形发夹 + 相机齐全、
-> 11 个形态同一人同机位。**遗留**：发夹是"星芒"不是清晰的五角金属星；11 张里 4 张 25 步、
-> 7 张 16 步，锐度略有差异。
->
-> **2026-10-20 更新**：原来还有三段 AniSora 事件片段和一段待机循环，因为机位/光线/景深和
-> 底板不是同一场戏（插进来一秒就是"背景换台"），用户明确要求删除，**已全部删掉**，
-> 演出改为程序合成（见 §6）。这条也算把下面的历史问题彻底关掉：
-> 旧版 `idle_loop.mp4` 是**吧台视角 + 正在下雨**的循环视频，换底板后它仍盖在场景板上，
-> 导致"新底板 + 旧视频"同时出现（下着雨、吧台在右边）。现在没有视频层，这个问题不可能再出现。
+> **素材生成脚本不在仓库里**：它们依赖本机的 ComfyUI 与十几 GB 模型权重，属于开发期工具，
+> 不满足「clone 下来就能跑」的交付标准。仓库只带**运行必需的成品素材**（`cards/` 下的注册位）。
+> 需要重出素材时，按本节的工作流描述在 ComfyUI 里重建即可；`tools/gen/` 里留了两个
+> 与运行/验收相关的脚本（`gen_turn.py` 的产物结构、`integrate_turn.py` 的调色与落位规则）。
 
 素材全部自制（AI 生成 + 本地推理），无第三方版权素材；未使用任何私有 API Key。
 
@@ -465,9 +461,9 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 1. **不用 Live2D / Rive / Spine，用「背景板 + 角色贴片 + 程序合成演出」**
    Live2D 需要拆分图层与绑定，72 小时内做不出可用的二次元角色；Rive/Spine 同理。
    改为分层舞台：场景是固定的一层背景板，角色是带 alpha 的贴片，表情/动作只换贴片，
-   镜头变化只对整舞台做 transform —— 背景板一个像素都不动。这正是第一版踩过的坑：
-   单张全帧图 + img2img 差分会把背景一起重绘，人物一换，灯和窗也跟着变。
-   动态感由**程序合成的演出**补足（闪电补光 / 车灯横扫 / 照片静帧推近），不再依赖视频。
+   但**不做镜头推拉**：整台舞台在 1.2 秒内被连续缩放＝每一帧都重采样整幅画面，
+   那是「说话时闪」的最大来源（实测 stage transform 变化 49 次/秒），推近只有 2% 的观感收益，
+   直接取消；`transform` 留给将来做「整数像素平移」那种不重采样的运镜。
    代价照实说：一层贴片做不了点头、侧倾、呼吸时肩膀的真实形变——这是这条路线的天花板。
 2. **不做端到端语音模型，用 STT + LLM + TTS 三段式**
    端到端语音模型（如 Moshi）本机没有可用的中文权重，且难以插入"打断即停"的确定性控制。
@@ -485,36 +481,75 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
    静帧有加载中徽标/`onload` 收层/`hideCinema()` 即清 `src`/失败退成暗角 + 徽标。
    为什么不再去生成替代视频：实时生成 3 秒片段要 1–3 分钟，与互动节奏冲突；离线预生成
    又必须和底板同机位同光线才不"跳台"，那还不如用 CSS/WebAudio 合成——0 素材、0 加载。
-
 ---
 
 ## 9. 观测、降级与测试
 
 - 页面「观测」面板：provider 切换、故障注入（LLM 超时 / TTS 失败 / TTS 变慢 / 演出降级）、
-  实时事件流水、首包与总耗时。
+  实时事件流水、首包与总耗时、台词校正次数。
 - `/debug`：独立观测页，读取 `/api/events/<session>`，展示 turn 耗时、错误、provider 健康。
+- `logs/turns.jsonl`：每轮一行 trace（决策依据、闸门动作、延迟），`MIRA_TRACE=0` 可整层关掉。
 - 降级链：TTS 失败 → 字幕 + 浏览器 `speechSynthesis`（可关）；演出降级 → 闪电只补光、
-  照片退成暗角 + 徽标（不黑屏）；LLM 超时 → 错误提示 + 可重试，不打断已完成的画面状态。
-- 自动化测试：
+  照片退成暗角 + 徽标（不黑屏）；LLM 超时 → 换下一档 provider，界面不假装成功。
+
+降级是**可见**的：`done` 事件带 `provider`（card / llama / strata / mock / cloud），
+观测面板「模型」一行随之变化。曾经有一版降级是静默的——掉到 mock 时界面照样回一句很像样的话，
+没人知道背后没调模型；现在链内每个 provider 有首字预算（`MIRA_FIRST_TOKEN_BUDGET`，9s），
+超了就换下一个，换了几次都写在事件里。
+
+自动化测试。先装测试依赖（运行依赖里刻意不含它们）：
 
 ```powershell
-# 先启动服务，然后：
-.\.venv\Scripts\python.exe tools\qa\api_test.py      # 17/17：流/指令/打断/STT/卡包快照
-.\.venv\Scripts\python.exe tools\qa\layers_test.py   # 3/3：换表情/换动作只改角色层，背景零变化
-.\.venv\Scripts\python.exe tools\qa\mic_test.py      # 按住说话：Chromium 假设备喂 WAV
-.\.venv\Scripts\python.exe tools\qa\mic_tap_test.py  # 轻点一下 + 停顿自动发送（"话筒坏了"那条路径）
-.\.venv\Scripts\python.exe tools\qa\chat_probe.py    # 对话质量探针：12 轮固定台词，逐轮打印回复/指令/节拍/耗时
-.\.venv\Scripts\python.exe tools\qa\shots.py         # 真机截图：开场/待机/事件/观测面板
-.\.venv\Scripts\python.exe tools\qa\record_demo.py   # 重录 3-5 分钟演示（见 §14）
+.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\venv\Scripts\python.exe -m playwright install chromium
 ```
 
-- `api_test.py`：turn 事件完整性、指令枚举收敛（枚举从 `/api/card` 读，不在测试里硬编码）、
-  关键词触发事件、打断后不再发 `done`、打断后新 turn 的 seq 递增、STT 中文转写。当前 **17/17 通过**。
-- `layers_test.py`：驱动真实页面后断言分层不变量 —— **换表情/换动作时，角色 alpha 之外
-  只变了 0.08% / 0.02%**（阈值 1.5%），镜头变换作用在同时包住背景板和角色贴片的 `.stage` 上。
-  这一版把断言从「整帧变化 < 2%」改成「角色 alpha 之外的变化」：11 个状态是逐张生成的，
-  她身上的明暗本来就会有细微差别，那属于角色层；被要求的其实是**房间一个像素都不许动**。
-- `chat_probe.py`：改提示词/卡包之后用它对比「回复是不是在真的接话、有没有复读、节拍推进对不对」。
+然后起服务（`start.ps1`，或 `LLM_MODE=mock uvicorn app.main:app --port 8787`），逐条跑：
+
+```powershell
+# 端到端：流完整性 / 指令枚举收敛 / 关键词事件 / 打断 / STT 中文转写
+.\.venv\Scripts\python.exe tools\qa\api_test.py            # 19/19
+# 分层不变量：换表情/换动作只改角色层，房间像素不动；镜头推拉必须保持关闭
+.\.venv\Scripts\python.exe tools\qa\layers_test.py         # 4/4
+# 纯函数单测（不需要服务）
+.\.venv\Scripts\python.exe tools\qa\dialogue_units.py      # 116/132
+.\.venv\Scripts\python.exe tools\qa\empty_reply_units.py   # 31/31
+.\.venv\Scripts\python.exe tools\qa\exit_gate_units.py     # 18/21
+# 真实浏览器 + 假麦克风（8787）
+.\.venv\Scripts\python.exe tools\qa\mic_test.py            # 按住说话 → 真 STT → 她开口
+.\.venv\Scripts\python.exe tools\qa\mic_tap_test.py        # 轻点 + 停顿自动发送
+# 探针（打印逐轮证据，不做断言）
+.\.venv\Scripts\python.exe tools\qa\chat_probe.py          # 12 轮固定台词的对话质量
+.\.venv\Scripts\python.exe tools\qa\dialog_fix_probe.py    # 台词二次校正命中率
+.\.venv\Scripts\python.exe tools\qa\probe_json_shell.py    # 协议 JSON 漏进字幕/语音
+.\.venv\Scripts\python.exe tools\qa\turn_api.py            # 单轮 NDJSON 原样打印
+```
+
+**这些数字是实跑出来的，包括没过的那些**（2026-10-22 复跑，mock 档）：
+
+| 脚本 | 结果 | 说明 |
+| --- | --- | --- |
+| `api_test.py` | **19 passed / 0 failed** | STT 真实转写「你是在等什么人吗?」，1147ms / 2.26s 音频 |
+| `layers_test.py` | **4 passed / 0 failed** | 换表情/换姿势时背景板变化 0.0000%；`camera off` 断言推拉确实是关的；`lights_dim` 真的切暗场 |
+| `empty_reply_units.py` | **31 passed / 0 failed** | 覆盖「只吐首行 JSON」「骨架漏进台词」「JSON 与台词同行」「键名缺失」等全部已知形态 |
+| `mic_test.py` | 通过 | `getUserMedia → MediaRecorder → /api/stt(1473ms) → /api/turn → /api/tts_stream(3 句)`，她真的开口 |
+| `mic_tap_test.py` | 通过 | 轻点后 1.15s 静音自动发送（测试夹具本地拼「人声 + 尾部静音」） |
+| `dialogue_units.py` | **116 passed / 16 failed** | 见下 |
+| `exit_gate_units.py` | **18 passed / 3 failed** | 见下 |
+
+两条红的，逐条能说清是什么：
+
+- `dialogue_units.py` 的 16 条分两类：**① 旧剧情用例**（「第 1 拍被问照片」「相片在我雨衣内袋里」
+  这些是 v14 把「照片道具」换成「手机」之前的断言，被测对象已经不存在了）；**② 真缺陷**
+  （「你手机号码多少？」被判成 `photo` 槽位；「黑咖啡，不加糖」被当旁白拦下）。
+  第二类是活的 bug，只是不在当前演示路径上——`presets.yaml` 的越界拒绝会先接住它。
+- `exit_gate_units.py` 的 3 条：`two_years` / `rain_worry` / `ending_friend` 三个节点的
+  mock 台词没被闸门拦下。最后一条尤其说明问题——**它的兜底台词自己不合格**，
+  正是这个测试设计要防的形态。修法是按槽位给一句对题的话，还没做。
+
+> 一个诚实的结果是：**测试红着交付，但每一红都写得出来为什么**。
+> 也正因为如此，`beat_decision_test.py` 这轮被删了——它测的 `persona.beat_jump()`
+> 已在 v14 被节点图取代（`main.py` 里连调用都没有），留着只会把「测死代码的绿」当成质量证据。
 
 ---
 
@@ -526,79 +561,68 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 3. ~~视频片段是离线预生成的固定 4 段~~ → **视频已全部删除**（2026-10-20）。
    演出改为程序合成，好处是不再有"素材和底板不同场"的跳台；代价是**没有真实运镜**，
    闪电和车灯本质是两层 CSS 光效，靠的是"由你这句台词触发"这个因果，而不是画面信息量。
-   这一段该记的教训是：插入镜头必须和主场景同机位/同光线/同景深，否则不管多高清，
-   观众第一眼读到的都是"背景换台了"。
-4. 角色贴片：**2026-10-21 已按"兜帽放下"整体重出 13 张**（保留雨衣，兜帽垂在肩后，
-   对齐"进屋躲雨"的设定；旧版是室内戴帽）。配准统一到旧贴片的 bbox（bottom 1426 / cx 431 /
-   宽 ≈572，旧 1427 / 431 / 565），所以换贴片不会跳位；头顶比旧图低 ~40px 是去掉兜帽的必然结果。
-   逐张 bbox、edge AA 分数与重出参数见 [`docs/review/hood/REPORT.md`](docs/review/hood/REPORT.md)。
-   **~~没有真正的补间中间帧~~ → 已于 2026-10-21 补上**：7 个动作各 4 张中间帧 + 5 组表情过渡各 2 帧，
-   共 38 张（有损 webp q92，4.14MB），写进 `char/manifest.json` 的 `actions`/`transitions`，
-   客户端 `playFrames` 按帧表播放（440ms / 17 个 60fps 画面；旧行为是 90ms 叠化 / 6 个画面）。
-   判据与前后对比：剪影膨胀 **1.187 → 0.997**（lean_in）、边缘对比度 **0.842 → 0.944**，
-   详见 [docs/UNFIXED_2026-10-21.md](docs/UNFIXED_2026-10-21.md) §1 与
-   [docs/review/p1/REPORT.md](docs/review/p1/REPORT.md)。方法不是光流形变（实测方向是错的），
-   而是 **SDF 剪影插值 + 单源锁脸 + 逐像素时变权重**。
-   仍然存在：三个道具动作（咖啡杯/手机/举手）中间两帧里道具是"淡入"的，
-   432px 交付尺寸下读作"手正举起来"，1:1 能看到杯后透出口型。
-5. 桌面端是**居中取景框**（600px）+ 同一张场景板的模糊余光底图，不是自适应大屏布局。
-   题目只要求"桌面端可以正常体验"，这一版满足该要求但不算加分项；
-   要做成"桌面独立构图"需要另一套机位，属于两周项（README §12）。
-6. Mock 剧本是线性节拍 + 关键词分支，不理解语义；真实模型模式的剧情节拍控制弱于剧本。
+4. **角色贴片是 12 张单帧，没有中间过渡帧**（这是这一版主动退回来的决定）。
+   2026-10-21 确实补过整套过渡：7 个动作各 4 张中间帧 + 5 组表情过渡各 2 帧，
+   另加 164 张过渡帧 + 24 张动作序列帧，写进清单、客户端按帧表播放。
+   **但端点对不上**——末帧与现役姿态的差 δ=0.097–0.236，手臂还有重影；插帧之后
+   观众看到的是「换姿势时抖一下」，比直接叠化更假。2026-10-22 全部移入
+   `assets/char/_parked/v17/`（不再是交付素材），`playSequence` / `playTransition` 恒返回
+   false，退回 **90ms 交叉淡化**。教训：中间帧的验收判据不是「帧数够不够」，
+   而是**首末帧必须落在现役姿态上**；生成侧没对齐，播放侧再怎么补都是掩盖。
+   仍然存在：换 `lean_in` 这类机位更近的姿势时，头对头配准之后肩线还是会有一次轻微跳动。
+5. 桌面端是**居中取景框**（最大 600px）+ 同一张场景板的模糊余光底图，不是自适应大屏布局。
+   题目只要求"桌面端可以正常体验"，这一版满足该要求但不算加分项。
+6. Mock 剧本是节点图 + 关键词分支，不理解语义；真实模型模式的剧情节拍控制弱于剧本。
 7. 单进程内存会话，重启后会话丢失（题目不要求账号系统）。
-8. 对话质量：**默认档是 4B（llama.cpp）+ 导演层（`app/director.py`）**。导演层把「这一轮
-   说什么」确定化（意图 / 事实骨架 / 机检 / 兜底），模型只做措辞：单轮生成实测 0.4–0.6s，
-   关键轮带一次重写和确定性兜底，固定六轮脚本 0 违规。25B（Strata）保留为**对照档**
-   （`LLM_MODE=auto`）：它在完全开放、导演层没预设的话题上仍然更强，但那属于「自由发挥的
-   上限」，不是这个场景的必需品。详见 [`docs/SMALL_MODEL_PLAN.md`](docs/SMALL_MODEL_PLAN.md)。
+8. 对话质量：**默认档是 4B（llama.cpp）+ 导演层 + 预设库 + 决策层**。导演层把「这一轮
+   说什么」确定化（意图 / 事实骨架 / 机检 / 兜底），模型只做措辞。25B（Strata）保留为
+   **对照档**（`LLM_MODE=auto` 时优先探测）：它在完全开放、导演层没预设的话题上仍然更强，
+   但那属于「自由发挥的上限」，不是这个场景的必需品。详见
+   [`docs/SMALL_MODEL_PLAN.md`](docs/SMALL_MODEL_PLAN.md)。
 9. 4B 会自创枚举值（例如 `emotion:"listening"`）或只输出首行 JSON 就停。前者被白名单收敛、
    后者用本拍兜底台词接住，都会在 `fixes` 里留痕——**不假装是模型说对**。
    2026-10-21 又补了一道**时间白名单**机检：台词里的钟点、以及她**自己时间线上**的时长
-   （「我在这里坐了四个半小时」）必须能在卡包事实表里找到出处，否则整段重写一次；
-   环境铺垫时长（「雨停了快一个小时」）只留痕不重写。分档理由与 183 条真台词的复核在
-   [`docs/TIMECHECK_2026-10-21.md`](docs/TIMECHECK_2026-10-21.md)。
-   仍然存在：模型偶尔会复读到被复读闸门拦下、重写仍复读，最后用本拍兜底台词——观众看到的是
-   "她反复说同一句"（今天 10 轮里出现 3 轮）。修法是让兜底按槽位给一句对题的话，还没做。
+   （「我在这里坐了四个半小时」）必须能在卡包事实表里找到出处，否则整段重写一次。
+   仍然存在：模型偶尔会复读到被复读闸门拦下、重写仍复读，最后用本拍兜底台词。
 10. TTS 仍是 edge-tts（在线服务，无 Key 但有网络延迟），**风格 SSML 被服务端 1007 硬拒**（实测，
     详见 `docs/research/tts_voice.md`），情绪只能靠语速/音高/停顿 + 后处理近似。
-    已加 `app/tts/` 后处理：去 Edge 自带静音、按标点重插停顿/气口、小房间混响、高频柔化，
-    客户端句间停顿归零避免叠加。
-    **延迟（2026-10-21 实测，见 [`docs/LATENCY_2026-10-21.md`](docs/LATENCY_2026-10-21.md)）**：
-    edge 云端合成「第一个音频块」就要 1.18–1.38s（哪怕两个字），整句 1.86–2.18s，
-    网络抖动时 3.5s；本地后处理只占 52–335ms。现在的对策：
-    语气词预合成成本地静态音频 → **第一声 p50 277ms / p90 319ms**；
-    首句软切 14→8 字让第一句更早开始合成；单句 TTS 超时 12s→**6s**（抖动不再变成"卡 20 秒"）。
-    **第一句台词的延迟已于 2026-10-21 打下来**（[`docs/LATENCY_LIVE_2026-10-21.md`](docs/LATENCY_LIVE_2026-10-21.md)）：
-    瓶颈拆开是「每次合成都重付 **850ms** 的 TCP+TLS+WSS 握手」（838/850/855ms，极稳），
-    握手之后首块只要 223–270ms。现在用 `app/tts/live_edge.py` 的一条**保温 WSS** 复用连接
-    （`/api/turn` 一进来就预热，850ms 藏进 LLM 首字里），首句**边收 mp3 边解码成 PCM 边播**，
-    复用现有 `audio/L16` 契约、客户端播放器不用改。浏览器实测可听起点
-    **p50 2482 → 1121ms**（`MIRA_TTS_LIVE=0` 可一键回到旧行为，实测 2482ms）。
-    代价是流式第一条不走服务端 DSP，音色差已用客户端 high-shelf（−10dB@3k）压到 1–9kHz
-    最大 3.9dB。仍存在：有一条慢轮（长回复/重写路径）两档都在 2.4–2.6s；一条 WSS 上的合成是串行的，
-    两个会话同时说话会互相排队（未测）。
-    要真正「有感情」需要换本地情感 TTS（CosyVoice2 / IndexTTS2，一天级 PoC，见 README §12）。
+    已加 `app/tts/` 后处理：去 Edge 自带静音、按标点重插停顿/气口、小房间混响、高频柔化。
+    **延迟（2026-10-21 实测）**：edge 云端合成「第一个音频块」就要 1.18–1.38s（哪怕两个字），
+    整句 1.86–2.18s。现在的对策：语气词预合成成本地静态音频、首句软切 14→8 字、
+    单句 TTS 超时 12s→**6s**；再用 `app/tts/live_edge.py` 的一条**保温 WSS** 复用连接
+    （每次合成都重付 850ms 的 TCP+TLS+WSS 握手，把它藏进 LLM 首字里），首句边收 mp3
+    边解码成 PCM 边播。浏览器实测可听起点 **p50 2482 → 1121ms**
+    （`MIRA_TTS_LIVE=0` 可一键回到旧行为）。仍存在：有一条慢轮（长回复/重写路径）两档都在
+    2.4–2.6s；一条 WSS 上的合成是串行的，两个会话同时说话会互相排队（未测）。
+    **本地神经 TTS（CosyVoice2 零样本克隆）做完了但默认关闭**：它能把音色换成真人参考音，
+    却有两个实测缺陷——instruct2 会把情绪指令当台词念出来（ASR 证据见
+    [`docs/VOICE_LEAK_2026-10-21.md`](docs/VOICE_LEAK_2026-10-21.md)），且侧车 RTF 2.3
+    （22s 才说完 9.2s 音频，声音永远追不上字幕）。所以卡里 `voice.engine: edge`，
+    `MIRA_TTS_ENGINE=neural` 可以试，但**默认不上**。要有感情地说话，得等它修好这两个。
 11. 麦克风没有做回声消除（AEC）：外放时角色可能听到自己的声音，演示建议戴耳机。
-12. 场景已按第二轮反馈返工：**去掉前景三个杯子/纸巾**、**去掉窗外乱码霓虹招牌**（Qwen-Image-Edit
-    局部重绘，seed 11 最好），并用 alpha 规则清掉贴片底部残留的杯沿/桌面影子；
-    验收图 `docs/review/plate_composite_check.png`。
-    但它仍是「生成的一家虚构咖啡馆」，不是真实店铺复刻——下一步用真实店铺照片做 ControlNet/img2img。
-    她手里的杯子因为是旧构图抠出来的，边缘仍有半透明感（已用 alpha 增益压到可接受）。
+12. 场景是「AI 生成的一家虚构咖啡馆」，不是真实店铺复刻。第二轮反馈里的两处穿帮已修掉
+    （去掉前景多余的杯子和纸团、去掉窗外乱码霓虹招牌，都是 Qwen-Image-Edit 局部重绘）；
+    她手里的杯子因为是从旧构图抠出来的，边缘仍有半透明感（已用 alpha 增益压到可接受）。
 13. **演示录屏（交付项 4）**：`production/reports/demo_v20/mira_demo_v20.mp4`，
     用**云端 DeepSeek** 驱动、`tools/qa/record_demo_v20.py` 直接操作真实 UI 录出来的
     （Playwright 录页面 + 页面真实音频旁路混流，不是事后配音）。三段真实会话 + 章节卡，
-    覆盖文字互动 / 打断 / 降级 / 三种结局。见 README §14。
+    覆盖文字互动 / 打断 / 降级 / 三种结局。见 §14。
 14. **单卡 12 GB，四个服务抢同一张卡**：app + llama-server(~3GB) + 神经 TTS(~3-4GB) +
     ComfyUI(~7GB, 只出素材时需要)。超了不是变慢，是**退到 CPU**：实测 llama 4.13 tok/s
     （首字 40s+）、ComfyUI 从 2 s/step 掉到 97.5 s/step。
-    换句话说「出素材」和「演示」在这台机器上**不能同时进行**，
+    所以「出素材」和「演示」在这台机器上**不能同时进行**，
     启动顺序 / 自检 / 故障对照表见 [`docs/DEMO_CHECKLIST.md`](docs/DEMO_CHECKLIST.md)。
-15. **降级曾经是静默的**（已修）：`auto` 链 strata → llama → mock，掉到 mock 时界面照样
-    回一句很像样的话，没人知道背后没调模型；决策层的场景门也曾因为「有模型权重、但 venv 里
-    没装 torch」而**整条门失效**（`available()` 只看目录，异常又被上层当成"没有决策层"放行）。
-    现在 `done` 事件带 `provider`（card/llama/strata/mock）、观测面板「模型」一行随之变化，
-    链内每个 provider 的首字预算 9s（`MIRA_FIRST_TOKEN_BUDGET`）超了就换下一个。
-    根因、修法和教训见 [`docs/PLAN_v4.md`](docs/PLAN_v4.md) 末节。
+15. **两张结局静帧的着装和常驻贴片不一致**：场景里的 12 张贴片是「兜帽放下、挂在肩后」，
+    但 `ending/friend.webp` 画的是她站在门外雨棚下、**兜帽兜在头上**。剧情上说得通（出门遇雨），
+    从角色一致性看是一次着装翻转；若验收标准是「所有画面兜帽都必须放下」，这两张要重出。
+16. 仓库里有两份素材清单，职责不同：
+    - `cards/mira_cafe/assets/char/manifest.json`：**运行时用的那份**（12 个 poses + 配准参数 +
+      美术溯源字段），由 `/card-assets/<id>/char/manifest.json` 下发；
+    - `cards/mira_cafe/assets/manifest.json`：v17 迁移时的**旧快照**，零代码引用（回滚才需要）。
+      它里面留着 `char.show_photo` 这种 v14 就删掉的键——不影响运行，改素材时顺手清掉即可。
+17. `char/manifest.json` 的 `_v17_parked` 字段保留着那次「过渡帧下架」的记录
+    （164 张过渡帧 + 24 张动作序列帧的去向）。前端读不到 `actions`/`transitions`
+    时不会报错，只是不播序列——这是想要的行为，但排查「为什么没有中间帧」时要记得看这里。
 
 ---
 
@@ -607,19 +631,20 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 | 阶段 | 时间 |
 | --- | --- |
 | 读题、技术选型、素材路线 | ~1h |
-| 第一版素材（Animagine SDXL 差分 + 场景图）+ 发现「人物一改场景跟着变」 | ~1.5h（含模型下载） |
-| 素材链路重做：场景工作流（Qwen-Image 2.1 t2i）+ 角色工作流（参考图编辑）+ 抠像/合成 | ~2h |
+| 第一版素材（SDXL img2img 差分 + 场景图）+ 发现「人物一改场景跟着变」 | ~1.5h（含模型下载） |
+| 素材链路重做：场景工作流 + 角色工作流 + 抠像/合成 | ~2h |
 | AniSora 推理栈打通与短片生成（含 25GB 权重下载/解包）｜**该产出已于 2026-10-20 删除** | ~1.5h |
 | 后端（会话、流、指令协议、TTS/STT） | ~2h |
 | 前端（场景、状态机、音频队列、打断、降级） | ~2.5h |
-| **返工：自测发现「对话像背台词 / 话筒像坏的」**（回答纪律重写、内容触发剧情、反重复、观众记忆、麦克风三处兼容与反馈、TTS 并发与句间气口、环境音） | ~3h |
+| **返工：对话像背台词 / 话筒像坏的**（回答纪律、内容触发剧情、反重复、观众记忆、麦克风三处兼容、TTS 并发与气口、环境音） | ~3h |
 | **返工：卡包化**（card.yaml + 校验加载器 + /api/card + 前端素材清单化） | ~1h |
 | 素材返工调研（三视图 / 机位-道具分配 / Qwen 编辑路线） | ~1h |
 | 录屏、README、AI_USAGE、自动化测试 | ~2h |
-| **第二轮返工**（用户逐条验收后）：JSON 骨架漏进字幕/语音的四环根因、剧情推不动的四个 bug、电话贴片重出 5 版、README 对齐、云端模型重录三段 | ~10h |
-| **合计** | **约 28 小时**（其中约 35% 是等模型下载/推理） |
+| **第二轮返工**（v14–v17）：故事重写成节点图、素材第五轮重画与配准、表演通道、决策层、预设库、语音延迟、素材进卡 | ~12h |
+| **第三轮返工**（v18–v20）：电话贴片重出 5 版、协议 JSON 漏进语音的四环根因、剧情三个 bug、录屏重录、交付整理 | ~7h |
+| **合计** | **约 40 小时**（跨 2026-10-20 → 10-22 三天，其中约 1/3 是等模型下载/推理） |
 
-> 说明：返工的两行是这次交付里最值钱的部分——它们是**我自己体验完 Demo 之后推倒重来的**，
+> 说明：返工的三行是这次交付里最值钱的部分——它们是**我自己体验完 Demo 之后推倒重来的**，
 > 不是按题目清单交作业。第一版「技术上达标、体验上不达标」，这一点写在 §7.3 和 §10 里。
 
 ---
@@ -629,34 +654,34 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 1. **素材按 §7.3 的分层流水线重做**：plate 定稿 → 三视图身份锚 → 表情只改头肩 → 道具有专门
    的局部重绘通道；4 个机位（桌面/近景/反打/窗外）共用一张平面图做几何约束，避免穿帮。
    这一步做完再补角色 LoRA（现在训等于把错误固化进权重）。
-2. **语音体验**：`webrtcvad` / Silero VAD 做自动打断并区分附和音；AEC 去掉回声；
-   流式字幕（partial STT + 边说边显示）；把 edge-tts 换成**本地中文 TTS**（延迟可控、
-   能给更细的韵律与气声），并用音频驱动口型。
-3. **对话质量**：换 Qwen3-8B 或 14B（12GB 上 8B Q4 可跑）提指令遵循；给角色加**工具调用**
+2. **过渡帧重做（而不是再加）**：先解决「末帧必须等于现役姿态」——让中间帧的终点直接取
+   现役贴片，而不是让模型自己再画一遍终点；判据用首末帧 δ 而不是帧数。
+3. **语音体验**：`webrtcvad` / Silero VAD 做自动打断并区分附和音；AEC 去掉回声；
+   流式字幕（partial STT + 边说边显示）；把神经 TTS 的两个缺陷修掉（zero-shot 不进
+   `prompt_text`、RTF 压到 0.8 以下）再用，或只当预烘焙台词用。
+4. **对话质量**：换 Qwen3-8B 或 14B（12GB 上 8B Q4 可跑）提指令遵循；给角色加**工具调用**
    （记忆写入 / 场景事件 / 结束会话），把「靠关键词兜底」升级成模型自己决定演出；
-   加一层「台词去重」后处理压复读。
-4. **表演系统**：把「贴片」升级成**配置驱动的角色资源包**（表情/动作/口型/视线分层，
-   带淡入淡出与优先级队列）；用 **Qwen-Image-Layered** 把一张成品图自动拆成背景/前景/角色图层，
-   再用 **Inochi2D** 做骨骼绑定，换表情/动作就不用逐条编辑生成。
-5. **演出**：先把"和底板同机位"这件事解决，再谈视频——现在用程序合成顶着，是因为插入镜头
-   一旦和自己的场景不是同一场戏，观众只会读到"背景换台"。真要上视频，得先做固定机位的
-   平面图 + 同光源控制，或者干脆走实时渲染（WebGL/SDF 角色）而不是 I2V 生成。
-6. **工程质量**：Provider 抽象再抽一层（LLM/TTS/STT 各自可热插拔）、会话持久化、
-   OpenTelemetry 埋点、Playwright 端到端回归（含打断时序断言）、把 `tools/qa/chat_probe.py`
+   把 `dialogue_units.py` 里那 16 个红用例逐条做成兜底。
+5. **表演系统**：把「贴片」升级成**配置驱动的角色资源包**（表情/动作/口型/视线分层，
+   带淡入淡出与优先级队列）；用 **Qwen-Image-Layered** 把一张成品图自动拆成
+   背景/前景/角色图层，再用 **Inochi2D** 做骨骼绑定。
+6. **演出**：先把"和底板同机位"这件事解决，再谈视频——现在用程序合成顶着，是因为插入镜头
+   一旦和自己的场景不是同一场戏，观众只会读到"背景换台"。
+7. **工程质量**：Provider 抽象再抽一层（LLM/TTS/STT 各自可热插拔）、会话持久化、
+   OpenTelemetry 埋点、Playwright 端到端回归（含打断时序断言）、把 `chat_probe.py`
    扩成「对话质量回归集」。
-7. **剧情**：把剧本抽象成数据驱动的剧情图（节点 + 条件 + 演出），支持多分支与结局
-   ——卡包已经是这条路的地基。
 
 ---
 
 ## 13. 第三方与素材来源
 
-- 图像模型：Qwen-Image 2.1（通义千问，ComfyUI 原生节点；生成场景 + 参考图编辑角色）
+- 图像模型：**Krea-2 Turbo**（`JANK2AnimeKrea2Turbo_v10`，动漫底模，int8）；场景板构图用
+  **Qwen-Image 2.1**，重画用 **animagine-xl-4.0**；电话贴片精修用 **Qwen-Image-Edit**
 - ~~视频模型：AniSora V3.1 / Wan2.1-I2V-14B~~（生成的片段已于 2026-10-20 全部删除）
 - 抠像：rembg / isnet-anime（MIT）
-- 语音合成：edge-tts（Microsoft Edge 在线语音，免费无 Key）
+- 语音合成：edge-tts（Microsoft Edge 在线语音，免费无 Key）；可选本地 CosyVoice2-0.5B（Apache-2.0，默认关闭）
 - 语音识别：faster-whisper（Systran/whisper-small，MIT）
-- 本地大模型：Qwen3.8-4B（Apache-2.0），llama.cpp 推理
+- 本地大模型：Qwen3-4B（Apache-2.0），llama.cpp 推理
 - 云端模型：DeepSeek API `deepseek-chat`（仅演示录屏时用；key 由观测面板在运行时填入，
   **只活在服务进程内存里，不写磁盘、不进仓库**，仓库里没有任何 API 密钥）
 - 前端：原生 HTML/CSS/JS，无框架无构建步骤
@@ -667,7 +692,7 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 ## 14. 演示录屏（3–5 分钟）
 
 > **当前文件：`production/reports/demo_v20/mira_demo_v20.mp4`**
-> 780×1688 · 25fps · H.264 + AAC(48k mono) · **4:41（281.3s）· 54 MB**
+> 780×1688 · 25fps · H.264 + AAC(48k mono) · **4:41（281.3s）· 53 MB**
 > 三段真实会话 + 章节卡，**用云端 DeepSeek（`deepseek-chat`）驱动**。
 
 录制脚本 `tools/qa/record_demo_v20.py` 直接操作真实页面，做三件事：
@@ -719,17 +744,39 @@ python tools\gen\integrate_turn.py --grade 0.6  # 统一夜景调色 + 压 webp 
 .venv\Scripts\python.exe tools\qa\record_demo_v20.py --only A   # 只录某一段
 ```
 
-`--check` 的输出即是交付证据（跑一遍就有）：
+`--check` 的输出即是交付证据（跑一遍就有）：成片时长/体积、三段结局帧的匹配度、
+三段音画同步误差。开发期的逐章节验收截图与成片抽帧**未随仓库分发**——
+它们由这个脚本一次性生成，留在 `production/reports/demo_v20/` 下（已被 `.gitignore` 忽略）。
 
-```
-成片 mira_demo_v20.mp4: 281.32s, 54361 KB
-  段 A 结局帧 @163.1s → 最像 friend.webp（friend 0.498 / stranger 0.193）✓
-  段 B 结局帧 @255.6s → 最像 stranger.webp（friend 0.168 / stranger 0.553）✓
-  段 C 结局帧 @277.3s → 最像 stranger.webp（friend 0.178 / stranger 0.577）✓
-  段 A 音画同步复查：白闪 6.96s / 1kHz 6.98s（差 0.02s）
-  段 B 音画同步复查：白闪 5.76s / 1kHz 5.74s（差 0.02s）
-  段 C 音画同步复查：白闪 5.68s / 1kHz 5.70s（差 0.02s）
-  自检: 通过
-```
+![朋友结局静帧](docs/shot_ending.png)
 
-验收截图在 `production/reports/demo_v20/shots/`（14 张，逐章节），成片抽帧在 `final_frame_{A,B,C}.png`。
+> 结局静帧的真实页面截图（`ending/friend`）。注意她的兜帽在这张里是戴上的——
+> 见 §10 第 15 条，这是目前还没统一的一处。
+
+---
+
+## 15. 文档索引
+
+`docs/` 里只放**仍然有解释价值**的材料，每份都标了写作日期与覆盖范围；
+比它更新的事实以 README 本节和代码注释为准。
+
+| 文档 | 内容 | 时效 |
+| --- | --- | --- |
+| [`DIALOGUE_LOGIC.md`](docs/DIALOGUE_LOGIC.md) | 一轮对话的六层分工、数据流、闸门判据 | 2026-10-20；之后的预设库/决策层/表演排期见 §5.1、§5.3 |
+| [`DIALOGUE_WORKFLOW_V2.md`](docs/DIALOGUE_WORKFLOW_V2.md) | 「预设优先 / 生成兜底 / 表演掩盖」的推导与业界参照 | 2026-10-21；文中标注「提案」的部分后来已实现 |
+| [`SMALL_MODEL_PLAN.md`](docs/SMALL_MODEL_PLAN.md) | 4B 与 25B 的分工、为什么不需要大模型 | 有效 |
+| [`LATENCY_2026-10-21.md`](docs/LATENCY_2026-10-21.md) · [`LATENCY_LIVE_2026-10-21.md`](docs/LATENCY_LIVE_2026-10-21.md) | TTS 延迟拆解与保温 WSS 的实测数据 | 有效（数字来自真机） |
+| [`TIMECHECK_2026-10-21.md`](docs/TIMECHECK_2026-10-21.md) | 时间白名单机检：183 条真台词的复核 | 有效 |
+| [`UNFIXED_2026-10-21.md`](docs/UNFIXED_2026-10-21.md) | 三条遗留问题的方案与实测 | 2026-10-21；§1 的过渡帧已于次日整体下架（见 §10 第 4 条） |
+| [`DEMO_CHECKLIST.md`](docs/DEMO_CHECKLIST.md) | 单卡 12GB 下四个服务的显存账与演示顺序 | 有效 |
+| [`PLAN_v4.md`](docs/PLAN_v4.md) | provider 降级为什么曾经静默、后来怎么修 | 有效 |
+| [`ITERATION_2026-10-20.md`](docs/ITERATION_2026-10-20.md) | 第二轮投诉的逐条处理记录 | 历史记录 |
+| [`ASSETS_REVIEW.md`](docs/ASSETS_REVIEW.md) | 前三轮素材审核（Qwen-Image → animagine） | 历史记录；当前素材规格见 §7 |
+| [`research/turnaround_workflow.md`](docs/research/turnaround_workflow.md) | 三视图/机位方案的调研与选型依据 | 有效 |
+| [`research/tts_voice.md`](docs/research/tts_voice.md) | edge-tts 的能力边界与 SSML 被拒的证据 | 有效 |
+| [`VOICE_LEAK_2026-10-21.md`](docs/VOICE_LEAK_2026-10-21.md) | 神经 TTS 把情绪指令念出来的 ASR 证据（它为什么被回退） | 有效，是决策记录 |
+
+> 代码注释里引用的 `CHANNEL_SPEC_2026-10-21.md`、`PERF_CONTRACT.md`、
+> `CARD_ASSETS_LAYOUT_V17.md`、`VOICE_NEURAL.md` 等开发期设计文档未随仓库分发，
+> 它们对应的规则已经落到卡包数据（`channels` / `actions` / `corrections` / `fx`）与
+> `app/channels.py`、`app/perf.py` 的模块注释里。

@@ -91,7 +91,7 @@ def summarize(row: dict) -> dict:
 def main() -> int:
     global BASE
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="docs/review/dialogue/dialog_fix_after.json")
+    ap.add_argument("--out", default="docs/probe_out/dialog_fix_after.json")
     ap.add_argument("--base", default=BASE)
     args = ap.parse_args()
     BASE = args.base

@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import qwen_workflow as qw  # noqa: E402
 
-ROOT = Path(r"D:\interview\mira")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "assets" / "turn"
 RAW = OUT / "raw"
 PLATE_DIR = OUT / "plate"

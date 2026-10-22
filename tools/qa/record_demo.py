@@ -25,7 +25,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(r"D:\interview\mira")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "production" / "reports" / "demo"
 OUT.mkdir(parents=True, exist_ok=True)
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8787"

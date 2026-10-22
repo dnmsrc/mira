@@ -7,15 +7,37 @@
   .venv\\Scripts\\python.exe tools\\qa\\mic_tap_test.py
 """
 import sys
+import wave
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 URL = "http://127.0.0.1:8787/?rec=1"
-ROOT = Path(r"D:\interview\mira")
-WAV = ROOT / "production" / "reports" / "demo" / "fake_mic_48k.wav"
-SHOT = ROOT / "docs" / "review" / "demo" / "mic_tap_test.png"
+ROOT = Path(__file__).resolve().parents[2]
+SRC_WAV = ROOT / "cards" / "mira_cafe" / "assets" / "audio" / "sample_user.wav"
+TMP = ROOT / ".tmp"
+WAV = TMP / "mic_tap_16k.wav"
+SHOT = TMP / "mic_tap_test.png"
 TAP_MS = 90
+
+
+def make_fixture() -> Path:
+    """人声 + 尾部静音。仓库只带卡包里的示例语音，而「轻点后停顿自动发送」需要
+    尾部有一段真静音来触发 VAD，所以在本地拼一份（.tmp/ 已在 .gitignore 里）。"""
+    TMP.mkdir(parents=True, exist_ok=True)
+    if WAV.is_file():
+        return WAV
+    with wave.open(str(SRC_WAV), "rb") as w:
+        params = w.getparams()
+        frames = w.readframes(w.getnframes())
+    silence = b"\x00" * (params.framerate * params.sampwidth * params.nchannels * 2)
+    with wave.open(str(WAV), "wb") as out:
+        out.setparams(params)
+        out.writeframes(frames + silence)
+    return WAV
+
+
+WAV = make_fixture()
 
 logs = []
 

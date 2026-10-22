@@ -58,7 +58,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(r"D:\interview\mira")
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "production" / "reports" / "demo_v20"
 RAW = OUT / "raw"          # Playwright 原始 webm / 音轨
 SEG = OUT / "segments"     # 每段 mux 好的 mp4
