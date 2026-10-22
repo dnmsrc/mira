@@ -62,7 +62,9 @@ $env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
 **B. 用你已有的 Ollama / LM Studio / vLLM**
-让服务监听 `127.0.0.1:8080`（或设 `LLAMA_BASE_URL` 指过去），再 `$env:LLM_MODE="llama"` 启动。
+让服务监听 `127.0.0.1:8080`；端口不同就设完整 URL（变量名是 `LLAMA_URL`，不是 `*_BASE_URL`）：
+`$env:LLAMA_URL="http://127.0.0.1:11434"` —— **不要带 `/v1`**，程序自己拼 `/v1/chat/completions`。
+然后 `$env:LLM_MODE="llama"` 启动。
 
 **C. 什么都不装** —— 就是 1.1 的 Mock 模式。
 
