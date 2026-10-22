@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 对话由谁生成，只看 `:8080` 上有没有一个实现了 `POST /v1/chat/completions` 的本地服务。
 三种接法任选：
 
-**A. 一键下载**（Windows + NVIDIA，约 3 GB）
+**A. 一键下载**（Windows + NVIDIA，约 3.4 GB）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\llm\fetch_llm.ps1   # llama.cpp + 4B 权重
@@ -719,7 +719,7 @@ cards/mira_cafe/assets/
 - 抠像：rembg / isnet-anime（MIT）
 - 语音合成：edge-tts（Microsoft Edge 在线语音，免费无 Key）；可选本地 CosyVoice2-0.5B（Apache-2.0，默认关闭）
 - 语音识别：faster-whisper（Systran/whisper-small，MIT）
-- 本地大模型：[Qwen3.8-4B-Distill](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)（Apache-2.0），llama.cpp `b11729`（CUDA 12.4）推理；**权重与二进制不进仓库**（约 3 GB，按 §1.2 自行获取）
+- 本地大模型：[Qwen3.8-4B-Distill](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)（Apache-2.0），llama.cpp `b11729`（CUDA 12.4）推理；**权重与二进制不进仓库**（约 3.4 GB，按 §1.2 自行获取）
 - 云端模型：DeepSeek API `deepseek-chat`（仅演示录屏时用；key 由观测面板在运行时填入，
   **只活在服务进程内存里，不写磁盘、不进仓库**，仓库里没有任何 API 密钥）
 - 前端：原生 HTML/CSS/JS，无框架无构建步骤

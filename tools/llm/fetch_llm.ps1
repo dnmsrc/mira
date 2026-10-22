@@ -55,7 +55,7 @@ if (Test-Path $exe) {
     Write-Host "[fetch] llama.cpp already present: $exe"
 } else {
     $lzip = Join-Path $llmDir "llama-$build-bin-win-cuda-12.4-x64.zip"
-    Get-File $zipUrl $lzip "llama.cpp $build (~65 MB)"
+    Get-File $zipUrl $lzip "llama.cpp $build (~255 MB)"
 
     $stage = Join-Path $llmDir "_stage"
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -78,7 +78,7 @@ if (Test-Path $exe) {
     # dies with "cudart64_12.dll was not found".
     try {
         $dllzip = Join-Path $llmDir "cudart-llama-bin-win-cuda-12.4-x64.zip"
-        Get-File $dllUrl $dllzip "CUDA runtime DLLs (~16 MB)"
+        Get-File $dllUrl $dllzip "CUDA runtime DLLs (~373 MB)"
         Expand-Archive -Path $dllzip -DestinationPath $llamaD -Force
         Write-Host "[fetch] CUDA runtime DLLs merged into $llamaD"
     } catch {
