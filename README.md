@@ -441,6 +441,9 @@ cards/mira_cafe/assets/
   char/   neutral smile worried surprised thinking listen      ← 6 张表情
           look_window sip_coffee check_phone lean_in phone_call stand  ← 6 张动作
           manifest.json（bbox / 配准参数 / 美术溯源字段）
+          ↑ 这里 `source` 段记的是开发期原图文件名（`v9/rebuild/*.png`）。
+            那些 PNG 不随仓库分发，所以按 manifest 去拼 URL 会 404 —— **运行时只读
+            `poses[].file` 与 `registration`**，`source` 纯属溯源记录，不是资产清单。
   plate/cafe_night.webp（864×1536，无人物的空场景）
   ending/friend.webp · stranger.webp（两张结局静帧）
   fx/softdot.webp（粒子贴图）
