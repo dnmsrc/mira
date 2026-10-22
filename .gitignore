@@ -93,6 +93,7 @@ tools/gen/*
 !tools/gen/gen_turn.py
 !tools/gen/integrate_turn.py
 tools/llm/*
+!tools/llm/fetch_llm.ps1
 !tools/llm/serve_qwen.py
 !tools/llm/start_llm.ps1
 tools/qa/*

@@ -18,32 +18,65 @@
 
 ## 1. 快速开始
 
+### 1.1 先跑起来（零下载，Mock 模式）
+
 ```powershell
-# 一条命令：建 venv、装依赖、按需拉起本地模型、起服务、开浏览器
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 # 或者双击 start.bat
 ```
 
-打开 <http://127.0.0.1:8787/>，点「进入场景」。
+打开 <http://127.0.0.1:8787/>，点「进入场景」。首次运行自动建 `.venv`、装依赖。
+
+**这个仓库不包含模型权重和推理二进制**：`.gitignore` 排除了 `models/`
+（开发机上约 82 GB）和 `tools/llm/llama/`（llama.cpp + CUDA 运行时约 1.2 GB）。
+所以在一台干净的机器上，启动器探测不到本地模型，**自动走 Mock 模式**——
+剧本按你的话推进，但走的是**同一条代码路径**：同一个 NDJSON 流、同一套指令协议、
+同一个前端状态机；四种状态、6 种表情、6 种动作、镜头/环境切换、剧情节点与
+三个结局全部可复现。
+
+> 这不是「残缺版」，是刻意设计的可复现兜底。面试演示最大的风险是网络/额度/环境，
+> Mock 保证换任何一台机器都能看到完整流程，而且每一步都能在观测面板里核对。
+
+### 1.2 接真实模型（可选，需自备一个 OpenAI 兼容后端）
+
+对话由谁生成，只看 `:8080` 上有没有一个实现了 `POST /v1/chat/completions` 的本地服务。
+三种接法任选：
+
+**A. 一键下载**（Windows + NVIDIA，约 3 GB）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\llm\fetch_llm.ps1   # llama.cpp + 4B 权重
+powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1   # 起 :8080
+$env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+**B. 用你已有的 Ollama / LM Studio / vLLM**
+让服务监听 `127.0.0.1:8080`（或设 `LLAMA_BASE_URL` 指过去），再 `$env:LLM_MODE="llama"` 启动。
+
+**C. 什么都不装** —— 就是 1.1 的 Mock 模式。
+
+本项目实测用的是 [`empero-ai/Qwen3.8-4B-Distill-GGUF`](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)
+的 `Q4_K_M`（2.8 GB，Apache-2.0）。**两个坑先说在前面**：
+
+- 它是 qwen35 **混合架构**（Gated DeltaNet），必须用**较新的** llama.cpp（本机实测
+  build 11729 / `0.7.0-dev`），旧版本会直接加载失败——这不是本项目的问题，是模型架构决定的；
+- 它是推理模型，原始输出带 `<think>` 块。`app/providers.py` 里已有剥离与首 token 预算。
+
+换别的模型也能跑（任何 OpenAI 兼容后端都可以），只是措辞质量会变：提示词与闸门是按
+4B 调的，往上换 7B/14B 通常更好，换到 1B 以下会明显退化。
 
 启动器会按顺序探测三件事，**缺任何一件都还能跑**：
 
 | 依赖 | 有 | 没有 |
 | --- | --- | --- |
-| LLM（`LLM_MODE=auto`） | 先找 `:1234`（Strata 25B）→ 再找/拉起 `:8080`（llama.cpp + Qwen3-4B） | 退回 **Mock**：剧本按你的话推进，仍是同一条代码路径 |
+| LLM（`LLM_MODE=auto`，默认） | 依次试 `:1234` → `:8080` | 退回 **Mock**：剧本按你的话推进，仍是同一条代码路径 |
 | TTS | 卡里 `character.voice.engine: edge`，走 edge-tts（免费、无 Key） | 无网时降级为字幕 + 浏览器 `speechSynthesis` |
 | 神经音色侧车（可选） | 本机有 `mira-tts` conda 环境时可 `MIRA_TTS_ENGINE=neural` | 默认不启动，省 ~20s 启动与 ~2GB 显存 |
 
-- **Mock 模式**（`$env:LLM_MODE="mock"`）：不调用任何模型、不需要网络、不需要 Key，
-  四种状态、6 种表情、6 种动作、镜头/环境切换、剧情节点与三个结局全部可复现。
-  它是**同一条代码路径**（同一个 NDJSON 流、同一套指令、同一个前端状态机），
-  只把「文本生成」换成剧本——这是保证「别人机器上也能看到完整流程」的兜底。
-- **真实模型模式**（本地 llama.cpp，OpenAI 兼容接口，无云端密钥）：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\llm\start_llm.ps1   # 单独起 4B
-$env:LLM_MODE="llama"; powershell -ExecutionPolicy Bypass -File .\start.ps1
-```
+> `:1234` 是开发机上的一个 **Strata 25B MoE 对照档**（`StrataLLM`），不是启动前提：
+> 空机器上这个端口永远不会有服务，探测失败后约 1.2s 就落到 `:8080` → Mock。
+> 保留这一层是为了演示「同一个 app 能切不同规模的模型」，不是为了让项目跑起来。
+> `LLM_MODE` 显式设为 `llama` / `mock` 可以跳过这次探测。
 
 页面右上角「观测」可以在运行时切换 provider、注入故障、查看状态事件与耗时。
 
@@ -370,6 +403,10 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 
 ## 7. 模型与素材
 
+> **这一节讲的是「素材和模型是怎么做出来的」，不是运行依赖。** 仓库里没有权重、
+> 没有 llama.cpp 二进制、也没有 ComfyUI 工作流的原始工程；运行只依赖 `requirements.txt`，
+> 接真模型的方式见 §1.2。素材（`.webp` + `manifest.json`）在 `cards/` 下，是交付物。
+>
 > 素材审核与历史见 [`docs/ASSETS_REVIEW.md`](docs/ASSETS_REVIEW.md)。
 > **注意**：那份文档记录的是前三轮（Qwen-Image → animagine SDXL）的审核过程；
 > 当前线上素材是第五轮之后的产物，规格见本节。
@@ -382,7 +419,7 @@ v14 起「线性七拍 + 话题命中够两次才推进」整体换成**节点�
 | 角色抠像 | rembg `isnet-anime` + 连通域清理 | 得到带 alpha、与背景板同机位同尺寸的贴片 |
 | 配准 | `register_poses.py`：头顶点 / 头宽 / 头中心 x | 12 张是分别重画的，lean_in 镜头更近、头还偏过 20–60px；只求整体缩放 + 平移，**头对头** |
 | 演出（已删视频） | ~~AniSora V3.1（Wan2.1-I2V-14B fp8）~~ → 程序合成 + 一张静帧 | 原来生成 4 段 MP4，机位/光线和底板不是同一场戏，2026-10-20 全部删除；现在闪电/车灯用 CSS + WebAudio 合成 |
-| 对话 | Mock 剧本 / Qwen3-4B（llama.cpp，OpenAI 兼容） | 真实模式完全本地，无云端密钥；可选 Strata 25B 对照档 |
+| 对话 | Mock 剧本 / Qwen3.8-4B（llama.cpp，OpenAI 兼容） | 真实模式完全本地，无云端密钥；**权重不进仓库**，获取方式见 §1.2 |
 | TTS | edge-tts `zh-CN-XiaoyiNeural`（rate -6%，pitch -8Hz） | 免费无 Key；按句流式合成、同文本缓存命中 0 开销 |
 | STT | faster-whisper `small`，CPU int8，VAD | 热身后 2.2s 语音约 2.2s 转写；`WHISPER_SIZE=base` 可降到 0.8s |
 
@@ -681,7 +718,7 @@ cards/mira_cafe/assets/
 - 抠像：rembg / isnet-anime（MIT）
 - 语音合成：edge-tts（Microsoft Edge 在线语音，免费无 Key）；可选本地 CosyVoice2-0.5B（Apache-2.0，默认关闭）
 - 语音识别：faster-whisper（Systran/whisper-small，MIT）
-- 本地大模型：Qwen3-4B（Apache-2.0），llama.cpp 推理
+- 本地大模型：[Qwen3.8-4B-Distill](https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF)（Apache-2.0），llama.cpp `b11729`（CUDA 12.4）推理；**权重与二进制不进仓库**（约 3 GB，按 §1.2 自行获取）
 - 云端模型：DeepSeek API `deepseek-chat`（仅演示录屏时用；key 由观测面板在运行时填入，
   **只活在服务进程内存里，不写磁盘、不进仓库**，仓库里没有任何 API 密钥）
 - 前端：原生 HTML/CSS/JS，无框架无构建步骤
