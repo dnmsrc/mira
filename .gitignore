@@ -1,0 +1,135 @@
+# ============================================================================
+# Mira —— 仓库只放「代码 + 运行必需的卡包素材 + 交付文档 + 演示成片」。
+# 开发期的模型权重、推理二进制、审阅截图、抽帧、录屏原料、一次性探针
+# 一律留在本机，不进仓库。总原则：整目录忽略 + 需要交付的逐个放行。
+# ============================================================================
+
+# ---------------------------------------------------------------- 运行时 ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ------------------------------------------------- 本地模型 / 推理二进制 ---
+# 权重约 82 GB（首次运行按需下载到 models/llm/），llama.cpp 与 CUDA 运行时
+# 约 1.2 GB（tools/llm/start_llm.ps1 负责下载解压）。两者都不进仓库。
+models/
+tools/llm/*.zip
+tools/llm/llama/
+tools/llm/llama-*/
+tools/llm/cudart/
+
+# ---------------------------------------------------------- 临时 / 缓存 ---
+.tmp/
+media/
+logs/
+production/session-state/
+.archify/
+project.yaml
+tmp_export.py
+_coldstart/
+_coldstart*/
+
+# ------------------------------------------------------------ 备份/中间物 ---
+# 统一按后缀拦：*_vNN 备份、脚本产生的 .bak、抠像中间产物。
+*.bak
+*.bak_v*
+*.tmp
+cards/*/assets/char/_parked/
+cards/*/assets/char/_raw_v15/
+cards/*/assets/char/md5.txt
+cards/*/assets/*/_backup*/
+cards/*/assets/*/_staging/
+cards/*/assets/*/_decontam/
+cards/*/assets/*/_preview/
+
+# ----------------------------------------------------- 素材工作区 / 第三方 ---
+# 素材在 cards/<id>/assets/ 注册位才算交付物；这里全是加工现场。
+# 注意必须锚定根目录：写成 assets/ 会把 cards/<id>/assets/ 一起误伤。
+/assets/
+/third_party/
+
+# -------------------------------------------------------- production 目录 ---
+# 1.8 GB 里只交一件东西：3–5 分钟的演示录屏。
+production/*
+!production/reports/
+production/reports/*
+!production/reports/demo_v20/
+production/reports/demo_v20/*
+!production/reports/demo_v20/mira_demo_v20.mp4
+
+# ------------------------------------------------------------------ docs ---
+# 98 份开发期文档 + 1297 张审阅截图（730 MB）只留交付相关的那些。
+docs/*
+!docs/ASSETS_REVIEW.md
+!docs/DEMO_CHECKLIST.md
+!docs/DIALOGUE_LOGIC.md
+!docs/DIALOGUE_WORKFLOW_V2.md
+!docs/ITERATION_2026-10-20.md
+!docs/LATENCY_2026-10-21.md
+!docs/LATENCY_LIVE_2026-10-21.md
+!docs/PLAN_v4.md
+!docs/SMALL_MODEL_PLAN.md
+!docs/TIMECHECK_2026-10-21.md
+!docs/UNFIXED_2026-10-21.md
+!docs/VOICE_LEAK_2026-10-21.md
+!docs/preview.png
+!docs/shot_ending.png
+!docs/shot_event_phone.png
+!docs/research/
+docs/research/*
+!docs/research/tts_voice.md
+!docs/research/turnaround_workflow.md
+
+# ----------------------------------------------------------------- tools ---
+# 375 个脚本里绝大部分是「某一轮改素材用一次」的探针与抽帧器（含产物 2.4 GB）。
+# 只留三类：生成流程、运行依赖、能复跑的自检。
+tools/*
+!tools/gen/
+!tools/llm/
+!tools/qa/
+!tools/tts/
+tools/gen/*
+!tools/gen/gen_turn.py
+!tools/gen/integrate_turn.py
+tools/llm/*
+!tools/llm/fetch_llm.ps1
+!tools/llm/serve_qwen.py
+!tools/llm/start_llm.ps1
+tools/qa/*
+!tools/qa/api_test.py
+!tools/qa/chat_probe.py
+!tools/qa/dialog_fix_probe.py
+!tools/qa/dialogue_units.py
+!tools/qa/empty_reply_units.py
+!tools/qa/exit_gate_units.py
+!tools/qa/layers_test.py
+!tools/qa/mic_tap_test.py
+!tools/qa/mic_test.py
+!tools/qa/probe_issue_replay.py
+!tools/qa/probe_json_shell.py
+!tools/qa/record_demo.py
+!tools/qa/record_demo_v20.py
+!tools/qa/shots.py
+!tools/qa/turn_api.py
+tools/tts/*
+!tools/tts/start_neural.ps1
+
+# -------------------------------------------------------------- app 目录 ---
+# v17 起素材跟着卡走（cards/<id>/assets/），app/static/assets* 是迁移前的旧位。
+app/static/assets/
+app/static/assets.bak_v16/
+
+# ---------------------------------------------------------- OS / 编辑器 ---
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# ------------------------------------------------------------------ 密钥 ---
+.env
+*.key
+
+# -------------------------------------------------- 开发过程文档 ---
+# 逐日计划、评审记录、验收截图、迭代笔记留在本机，不随仓库分发。
+docs/

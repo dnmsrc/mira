@@ -1,0 +1,159 @@
+# =============================================================================
+# 卡包模板（空壳）· 复制这张目录 → 改 id → 放图 → 改文案，就是一张新卡
+#
+# 怎么加一张卡（**不用改任何 Python 代码**）：
+#   1) cp -a cards/_template cards/<新卡id>
+#   2) 把 card.yaml 里的 id 改成**目录名**（cards.py 会校验两者一致，因为对外
+#      静态前缀 /card-assets/<目录名>/ 是按目录名挂的）
+#   3) 把图放进 assets/{char,plate,ending,fx,insert,audio}/
+#   4) 起服务：启动时会自动发现并挂载 /card-assets/<新卡id>/
+#      - 想看这张卡：CARD_ID=<新卡id> python -m uvicorn app.main:app
+#      - 全量目录契约见 docs/CARD_ASSETS_LAYOUT_V17.md
+#
+# 本模板**不参与运行**：cards/ 下划线开头的目录不会被当成可运行的卡（cards.discover）。
+# 想验证它能启动：CARD_ID=_template python -c "from app import cards; print(cards.load()['id'])"
+# =============================================================================
+
+schema: mira.card/2
+id: _template          # ← 必须等于目录名
+version: 1
+title: 卡包模板
+tagline: 抄走这张卡：改 4 个地方（id / 角色 / 故事 / 素材），不用碰代码。
+target_seconds: 180
+mode: conversation
+
+# ----------------------------------------------------------------- 角色
+character:
+  name: 模板角色
+  age: 25
+  job: 占位职业
+  look: >
+    一句话写清外形、穿着、随身物件。模型会照着这段描写台词里的具体细节，
+    所以越具体越好（颜色 / 材质 / 磨损痕迹）。
+  temperament: 一句话写清说话方式：句子长短、情绪表达习惯、紧张时的反应。
+  # 音色：engine 决定走谁。neural 需要侧车（tools/tts/serve_neural.py），
+  # ref 目前解析到**仓库根** assets/voice/（见 docs/VOICE_NEURAL.md）。
+  voice:
+    engine: edge
+    edge:
+      name: zh-CN-XiaoyiNeural
+      rate: "-6%"
+      pitch: "-8Hz"
+      volume: "+0%"
+    neural:
+      ref: assets/voice/ref_zh_female_young.wav
+      ref_sha1: ""
+      prompt_text: ""
+      speed: 1.0
+  facts:
+    - key: fact_1
+      say: 一件可以透露的具体事实（带物件或数字，别写成情绪形容词）。
+    - key: fact_2
+      say: 第二件事实。
+  boundaries:
+    - 不要说模板以外的设定。
+    - 不要替观众做决定。
+
+# ----------------------------------------------------------------- 场景
+scene:
+  id: main
+  name: 场景名
+  details: 场景细节：灯光、声音、时间感、桌上有什么。
+  camera_pov: 固定的第三人称机位，隔着桌子看她的中景（不要推拉镜头）。
+  geometry:
+    zones:
+      full: {x: 0, y: 0, w: 1, h: 1}
+      face: {x: 0.32, y: 0.18, w: 0.36, h: 0.30}
+
+clock:
+  start: "20:00"
+  end: "20:10"
+  minutes_per_turn: 2.5
+  forced:
+    - {at: "20:10", node: "__ending__", why: 时间到，强制进结局}
+
+# ----------------------------------------------------------------- 指令枚举
+# 五个枚举都是**封闭集合**：模型只能从这里挑。新增一个值 = 加一行 + 通道表里声明。
+directives:
+  emotion:
+    neutral: 平静
+    smile: 微笑
+  action:
+    idle: 待机（坐着）
+    lean_in: 身体稍微前倾
+  scene:
+    main: 常驻机位
+  effect:
+    none: 安静
+  event:
+    none: 无视觉事件
+  default: {emotion: neutral, action: idle, scene: main, effect: none, event: none}
+
+# ----------------------------------------------------------------- 表演通道
+# 5 个通道同一时间各只能有一个动作；占嘴的动作在说话时会被降级（见 app/channels.py）。
+channels:
+  schema: mira.channels/1
+  speech_priority: 100
+  list:
+    speech: {label: 口部/发声, states: [说话, 沉默]}
+    hand: {label: 手部动作, states: [端杯子]}
+    body: {label: 身体姿态, states: [坐着, 前倾]}
+    gaze: {label: 头部与眼神, states: [看对方]}
+    face: {label: 神态, states: [平静, 微笑]}
+  face_map: {neutral: 平静, smile: 微笑}
+
+actions:
+  idle:    {channels: [],     speaks: false, priority: 0,  hold_ms: 0,    seated: true}
+  lean_in: {channels: [body], speaks: false, priority: 20, hold_ms: 1800, seated: true}
+
+# ----------------------------------------------------------------- 故事节点图
+# 每个节点 = 一拍。goto 从上到下第一个命中。至少一个节点的 ending 非空，否则故事永远不结束。
+story:
+  start: arrival
+  nodes:
+    - id: arrival
+      clock: "20:00"
+      title: 第一拍
+      goal: 一句话：这一拍她要达成什么（给模型，不给观众）。
+      allow: 可以说……
+      forbid: 不要说……
+      suggest: ["第一句建议话术", "第二句", "第三句"]
+      mock: 这一拍的兜底台词（模型没起时用）。
+      directive: {emotion: neutral, action: idle, scene: main}
+      goto:
+        - {to: wrap, when: {turn_gte: 1}}
+
+    - id: wrap
+      clock: "20:05"
+      title: 收尾
+      goal: 一句话：这一拍结束。
+      allow: 可以说再见。
+      forbid: 不要开新话题。
+      suggest: ["那我先走了。", "下次再聊。", "路上小心。"]
+      mock: 嗯。路上慢点。
+      directive: {emotion: smile, action: lean_in, scene: main}
+      ending: ending
+      goto: []
+
+# ----------------------------------------------------------------- 语音
+tts:
+  emotion:
+    neutral: { rate: "-6%", pitch: "-8Hz", volume: "+0%" }
+    smile:   { rate: "-2%", pitch: "-2Hz", volume: "+4%" }
+  gaps_ms: {default: 0, after_comma: 0, after_ellipsis: 0, after_question: 0}
+
+# ----------------------------------------------------------------- 素材清单
+# v17：只写**卡内相对路径**（相对 cards/<id>/assets/），不要写 /static/。
+# 对外由服务端拼成 /card-assets/<id>/…，客户端拿到的就是可直接用的绝对 URL。
+assets:
+  char:
+    neutral: char/neutral.webp
+    smile: char/smile.webp
+  pose:
+    lean_in: char/lean_in.webp
+  plate:
+    main: plate/main.webp
+  ending:
+    ending: ending/ending.webp
+  effect:
+    none: ""

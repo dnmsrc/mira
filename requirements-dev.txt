@@ -1,0 +1,7 @@
+# QA / 素材工具用的依赖，不要装进运行环境（渲染与探针需要）
+-r requirements.txt
+playwright>=1.40
+Pillow>=10.0
+
+# 首次使用浏览器探针前：
+#   .venv\Scripts\python.exe -m playwright install chromium

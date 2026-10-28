@@ -1,0 +1,15 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+edge-tts>=7.0
+faster-whisper>=1.0
+python-multipart>=0.0.9
+av==14.0.1
+PyYAML>=6.0
+numpy>=1.26
+
+# 可选（决策层）：app/selector.py 的 bge-reranker 场景门需要 torch + transformers。
+# 没装也能起服务 —— 会自动降级成关键词门，返回里标 backend=keyword，成绩明显更差。
+#   .venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   .venv\Scripts\python.exe -m pip install transformers
+# 不要写进上面的硬依赖：装了 torch 的部署体积会翻几倍，而门是可以降级的。

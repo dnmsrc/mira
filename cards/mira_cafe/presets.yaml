@@ -1,0 +1,200 @@
+# =============================================================================
+# 预设台词库（barks）· 雨后的咖啡馆 · Mira
+#
+# 定位：**命中就不调模型**。只放两类东西
+#   1) 高频低信息量：招呼 / 应答 / 道谢 / 告别 / 沉默 / 闲聊
+#   2) 必须精确：越界拒绝、出戏拉回
+# 剧情信息（在等谁、照片、三年、阿岸）**不放这里**——那些要按拍推进、要守禁说边界，
+# 只能由 director 算出来交给 4B 生成（见 docs/DIALOGUE_WORKFLOW_V2.md §5）。
+#
+# 触发：键 = (act × rel × beat)。act 由 app/acts.py 判（正则，0ms），rel 是当前拍的属性，
+# beat 是拍 id。留空表示任意。命中后还要过：冷却 / 变体轮换 / 与最近 3 句去重 /
+# 同拍连续命中上限（≤2 次，第 3 次强制生成，保证她时不时说一句没准备过的话）。
+#
+# 写法要求：
+#   - 一句一条，≤40 字（长句走生成；超过 40 字启动时会报错）
+#   - 每条 ≥3 变体（少于 3 条一定会被听出是念台词）
+#   - 不写括号旁白（这条链路的字幕会把括号里的字念出来）；动作写在 perf 里
+#   - 不出现「阿岸」（卡包硬边界；启动时校验）
+#
+# 校验：app/presets.py 启动时校验枚举/引用/变体数/禁词，不合法直接报错。
+# =============================================================================
+
+schema: mira.presets/1
+
+presets:
+  # ---------------------------------------------------------------- 招呼
+  - id: greet_basic
+    act: greeting
+    rel: [stranger]
+    beat: [arrival, probe]
+    priority: 75
+    cooldown: 6          # 招呼连着说两次最出戏，冷却给长一点
+    lines:
+      - "……嗯。你坐吧。"
+      - "外面还在下？"
+      - "这个点进来，是躲雨吧。"
+    perf: { emotion: neutral, action: idle }
+
+  - id: greet_second
+    act: greeting
+    rel: [stranger, opening]
+    beat: [probe, admit]
+    priority: 65
+    cooldown: 6
+    lines:
+      - "还没关灯，坐吧。"
+      - "你也是被雨堵住的？"
+      - "……我这儿还有一把椅子。"
+    perf: { emotion: neutral, action: idle }
+
+  - id: greet_open
+    act: greeting
+    rel: [open, trust]
+    beat: [photo, absence, choice]
+    priority: 60
+    cooldown: 5
+    lines:
+      - "你来了。"
+      - "……还以为你走了。"
+      - "雨小了点。坐。"
+    perf: { emotion: smile, action: lean_in }
+
+  # ---------------------------------------------------------------- 应答
+  - id: ack_short
+    act: ack
+    priority: 55
+    cooldown: 2
+    lines:
+      - "嗯。"
+      - "嗯，你说。"
+      - "……听着呢。"
+    perf: { emotion: listen, action: idle }
+
+  - id: ack_agree
+    act: ack
+    priority: 50
+    cooldown: 3
+    lines:
+      - "差不多吧。"
+      - "算是。"
+      - "也可以这么讲。"
+    perf: { emotion: neutral, action: idle }
+
+  # ---------------------------------------------------------------- 道谢
+  - id: thanks_deflect
+    act: thanks
+    priority: 60
+    cooldown: 3
+    lines:
+      - "不用谢。"
+      - "……客气了。"
+      - "这没什么。"
+    perf: { emotion: neutral, action: look_window }
+
+  # ---------------------------------------------------------------- 告别
+  - id: bye_leaving
+    act: bye
+    beat: [closing]
+    priority: 85
+    cooldown: 2
+    lines:
+      - "路上小心。"
+      - "雨还没停，慢点走。"
+      - "……回去把头发擦干。"
+    perf: { emotion: smile, action: stand }
+
+  - id: bye_early
+    act: bye
+    rel: [stranger, opening, open, trust]
+    beat: [arrival, probe, admit, photo, absence, choice]
+    priority: 65
+    cooldown: 3
+    lines:
+      - "嗯，走吧。"
+      - "……那就这样。"
+      - "门别关太响。"
+    perf: { emotion: neutral, action: idle }
+
+  # ---------------------------------------------------------------- 沉默 / 单字
+  - id: silence_huh
+    act: silence
+    rel: [stranger, opening]
+    beat: [arrival, probe, admit]
+    priority: 70
+    cooldown: 2
+    lines:
+      - "嗯？"
+      - "……怎么了。"
+      - "你说什么？"
+    perf: { emotion: thinking, action: idle }
+
+  - id: silence_soft
+    act: silence
+    rel: [open, trust, farewell]
+    beat: [photo, absence, choice, closing]
+    priority: 70
+    cooldown: 2
+    lines:
+      - "……你说。"
+      - "我在听。"
+      - "嗯，你慢慢说。"
+    perf: { emotion: listen, action: lean_in }
+
+  # ---------------------------------------------------------------- 闲聊
+  - id: small_weather
+    act: smalltalk
+    priority: 45
+    cooldown: 4
+    # needs = 内容相关性闸门：对方那句话里得有「雨 / 冷 / 湿」这类词，这条才允许用。
+    # 没有它的时候，「我叫张伟，今天加班到现在」会被 act=smalltalk 接走，
+    # 回一句「这几天雨都很大。」—— 答非所问里最难解释的一种。
+    # 2026-10-20：`天气` 从 needs 里删掉——「今天天气不错啊」命中了这条，
+    # 她回「这几天雨都很大」，AB 基准判成 scene_only（用景物代替回答）。
+    # 这条台词的语义是「下雨/冷」，不是「天气话题」，所以只认具体天气词。
+    when: { needs: ["雨", "冷", "热", "湿", "风", "降温"] }
+    lines:
+      - "这几天雨都很大。"
+      - "晚上比白天冷。"
+      - "屋檐一直在滴水。"
+    perf: { emotion: neutral, action: look_window }
+
+  - id: small_night
+    act: smalltalk
+    rel: [stranger, opening, open]
+    beat: [probe, admit, photo, absence]
+    priority: 45
+    cooldown: 4
+    when: { needs: ["晚", "夜", "静", "人少", "空"] }
+    lines:
+      - "这个点的街上没什么人。"
+      - "你今天也够晚的。"
+      - "……坐一会儿就好。"
+    perf: { emotion: neutral, action: sip_coffee }
+
+  # ---------------------------------------------------------------- 越界（硬边界）
+  # priority 95：这一条永远压过其它预设，也不受同拍连续命中上限影响之外的限制
+  - id: refuse_contact
+    act: personal
+    priority: 95
+    cooldown: 0
+    lines:
+      # 三条都必须**点在「号码」这件事上**：挡住可以，但要挡在对题上。
+      # 中间那条原来是光秃秃的「……这个不问。」——AB 基准（tools/qa/dialogue_ab.py）
+      # 判它 on_topic=False：被要联系方式却连「号码」两个字都没提，等于转移话题。
+      - "号码不给。"
+      - "号码……这个不问。"
+      - "你要找我，明天还来这条街就行。"
+    perf: { emotion: worried, action: lean_in }
+
+  # ---------------------------------------------------------------- 出戏（拉回戏里）
+  # 「你是 AI 吗」不能顺着聊，也不能真的解释系统；用一句听不懂把话拉回来
+  - id: meta_deflect
+    act: meta
+    priority: 99
+    cooldown: 0
+    lines:
+      - "什么？"
+      - "……你再说一遍。"
+      - "我没听清。"
+    perf: { emotion: thinking, action: check_phone }

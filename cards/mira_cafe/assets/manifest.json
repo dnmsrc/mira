@@ -1,0 +1,168 @@
+{
+ "plate": {
+  "cafe_night": {
+   "path": "assets/plate/cafe_night.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 197
+  }
+ },
+ "char": {
+  "neutral": {
+   "path": "assets/char/neutral.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 94,
+   "bbox": [
+    149,
+    405,
+    714,
+    1427
+   ]
+  },
+  "smile": {
+   "path": "assets/char/smile.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 106,
+   "bbox": [
+    150,
+    405,
+    714,
+    1427
+   ]
+  },
+  "worried": {
+   "path": "assets/char/worried.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 99,
+   "bbox": [
+    150,
+    405,
+    714,
+    1427
+   ]
+  },
+  "surprised": {
+   "path": "assets/char/surprised.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 101,
+   "bbox": [
+    144,
+    405,
+    718,
+    1427
+   ]
+  },
+  "thinking": {
+   "path": "assets/char/thinking.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 102,
+   "bbox": [
+    149,
+    405,
+    714,
+    1427
+   ]
+  },
+  "listen": {
+   "path": "assets/char/listen.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 99,
+   "bbox": [
+    162,
+    405,
+    700,
+    1427
+   ]
+  },
+  "look_window": {
+   "path": "assets/char/look_window.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 99,
+   "bbox": [
+    163,
+    405,
+    700,
+    1427
+   ]
+  },
+  "sip_coffee": {
+   "path": "assets/char/sip_coffee.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 108,
+   "bbox": [
+    154,
+    405,
+    708,
+    1427
+   ]
+  },
+  "check_phone": {
+   "path": "assets/char/check_phone.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 99,
+   "bbox": [
+    150,
+    405,
+    714,
+    1427
+   ]
+  },
+  "lean_in": {
+   "path": "assets/char/lean_in.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 100,
+   "bbox": [
+    192,
+    405,
+    671,
+    1427
+   ]
+  },
+  "show_photo": {
+   "path": "assets/char/show_photo.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 110,
+   "bbox": [
+    154,
+    405,
+    710,
+    1427
+   ]
+  },
+  "stand": {
+   "path": "assets/char/stand.webp",
+   "w": 864,
+   "h": 1536,
+   "kb": 103,
+   "bbox": [
+    170,
+    405,
+    692,
+    1427
+   ]
+  },
+  "_note": "char：Krea-2 Turbo (JANK2 int8) 重画，注册 bboxH=1230 / bottom=1480 / cx=432"
+ },
+ "playback": {
+  "crossfadeMs": 90,
+  "frameHoldMs": 110
+ },
+ "registration": {
+  "note": "v9/rebuild_all.py register(): figure scaled to alpha bbox height 1023, bottom pinned at row 1428, centred on column 432, 864x1536 canvas; silhouette anti-aliased by 2x render + premultiplied downsample (measured alpha ramp ~3px), no post-hoc blur or alpha erosion.",
+  "figureBottom": 1428,
+  "centreX": 432,
+  "bboxH": 1023
+ },
+ "_v17_parked": "v17（2026-10-22）：transitions{} 与 actions{} 已整块下架 —— 164 张过渡帧 + 24 张动作序列帧因端点失配（末帧对不上现役姿态，端点 δ=0.097–0.236）与肢体错误/重影全部移入 char/_parked/v17/，不再是交付素材。前端 playSequence/playTransition 自 22:37 起恒返回 false，本次只摘清单与预下载，不重出任何图。姿势与动作定稿贴片仍由 poses{} 提供（未受影响的 12 张）。回滚：python tools/qa/restore_parked_v17.py（并恢复本文件 .bak_v17）。清单清空量：transitions 41 键 / actions 6 键。"
+}
